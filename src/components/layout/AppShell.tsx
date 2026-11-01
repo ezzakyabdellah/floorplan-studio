@@ -8,6 +8,7 @@ import {
   Download,
   Frame,
   Grid3X3,
+  ImagePlus,
   Info,
   Loader2,
   MousePointer2,
@@ -15,12 +16,15 @@ import {
   PencilRuler,
   Plus,
   ShieldCheck,
+  Sparkles,
   Trash2,
   Upload,
 } from "lucide-react";
 import { Canvas2D } from "../canvas/Canvas2D";
 import { Canvas3D } from "../canvas/Canvas3D";
 import { CompliancePanel } from "../ui/CompliancePanel";
+import { ImageImporter } from "../ui/ImageImporter";
+import { LocalAiAssistant } from "../ui/LocalAiAssistant";
 import { useFloorPlanStore } from "../../store/floorPlanStore";
 import type { ActiveTool } from "../../types/floorplan";
 import { buildSceneFile, openSceneFile, saveSceneFile } from "../../utils/fileIO";
@@ -361,6 +365,8 @@ function Sidebar() {
   const setActiveTool = useFloorPlanStore((state) => state.setActiveTool);
   const complianceOpen = useFloorPlanStore((state) => state.complianceOpen);
   const toggleCompliance = useFloorPlanStore((state) => state.toggleCompliance);
+  const aiOpen = useFloorPlanStore((state) => state.aiOpen);
+  const toggleAi = useFloorPlanStore((state) => state.toggleAi);
   const walls = useFloorPlanStore((state) => state.walls);
   const openings = useFloorPlanStore((state) => state.openings);
 
@@ -417,6 +423,14 @@ function Sidebar() {
           active={complianceOpen}
           onClick={toggleCompliance}
           badge={issueCount > 0 ? issueCount : "OK"}
+        />
+        <ToolButton
+          icon={Sparkles}
+          label="AI Inspector"
+          shortcut="A"
+          active={aiOpen}
+          onClick={toggleAi}
+          badge="Local"
         />
         <div
           className={cn(
@@ -482,7 +496,13 @@ function ViewSwitcher() {
   );
 }
 
-function TopBar({ notify }: { notify: Notify }) {
+function TopBar({
+  notify,
+  onOpenBlueprint,
+}: {
+  notify: Notify;
+  onOpenBlueprint: () => void;
+}) {
   const walls = useFloorPlanStore((state) => state.walls);
   const openings = useFloorPlanStore((state) => state.openings);
   const sceneName = useFloorPlanStore((state) => state.sceneName);
@@ -595,6 +615,16 @@ function TopBar({ notify }: { notify: Notify }) {
             </button>
           );
         })}
+        <button
+          type="button"
+          onClick={onOpenBlueprint}
+          className="flex items-center gap-1.5 rounded-lg border border-line px-2 py-1.5 text-[11px] font-medium text-slate-300 transition hover:border-accent/30 hover:bg-accent/10 hover:text-accent"
+          aria-label="Import Blueprint (PNG/JPG)"
+          title="Import Blueprint (PNG/JPG)"
+        >
+          <ImagePlus className="h-3.5 w-3.5" />
+          <span className="hidden md:inline">Import Blueprint</span>
+        </button>
       </div>
 
       <div className="ml-auto flex items-center gap-3">
@@ -644,11 +674,26 @@ export function AppShell() {
   const setActiveTool = useFloorPlanStore((state) => state.setActiveTool);
   const setActiveView = useFloorPlanStore((state) => state.setActiveView);
   const toggleCompliance = useFloorPlanStore((state) => state.toggleCompliance);
+  const toggleAi = useFloorPlanStore((state) => state.toggleAi);
   const [toast, setToast] = useState<ToastState>(null);
+  const [importerOpen, setImporterOpen] = useState(false);
 
   const notify = useCallback<Notify>((message, tone = "info") => {
     setToast({ id: Date.now(), message, tone });
   }, []);
+
+  const openImporter = useCallback(() => setImporterOpen(true), []);
+  const closeImporter = useCallback(() => setImporterOpen(false), []);
+  const handleImported = useCallback(
+    (wallCount: number, openingCount: number, name: string) => {
+      const openingLabel =
+        openingCount > 0
+          ? ` and ${openingCount} opening${openingCount === 1 ? "" : "s"}`
+          : "";
+      notify(`Imported ${wallCount} walls${openingLabel} from ${name}`, "success");
+    },
+    [notify],
+  );
 
   useEffect(() => {
     if (!toast) return;
@@ -686,6 +731,12 @@ export function AppShell() {
         case "r":
           toggleCompliance();
           break;
+        case "a":
+          toggleAi();
+          break;
+        case "b":
+          openImporter();
+          break;
         case "1":
           setActiveView("2d");
           break;
@@ -699,19 +750,31 @@ export function AppShell() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [setActiveTool, setActiveView, toggleCompliance]);
+  }, [
+    setActiveTool,
+    setActiveView,
+    toggleCompliance,
+    toggleAi,
+    openImporter,
+  ]);
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-shell text-slate-200">
-      <TopBar notify={notify} />
+      <TopBar notify={notify} onOpenBlueprint={openImporter} />
       <div className="flex min-h-0 flex-1">
         <Sidebar />
         <main className="relative min-h-0 min-w-0 flex-1 bg-[#0a0d12]">
           {activeView === "2d" ? <Canvas2D /> : <Canvas3D />}
           <CompliancePanel />
+          <LocalAiAssistant />
           <Toast toast={toast} />
         </main>
       </div>
+      <ImageImporter
+        open={importerOpen}
+        onClose={closeImporter}
+        onImported={handleImported}
+      />
     </div>
   );
 }

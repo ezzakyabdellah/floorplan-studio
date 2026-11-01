@@ -82,12 +82,15 @@ type FloorPlanState = {
   selectedWallId: string | null;
   selectedOpeningId: string | null;
   complianceOpen: boolean;
+  aiOpen: boolean;
   sceneName: string;
   revision: number;
   setActiveView: (view: ActiveView) => void;
   setActiveTool: (tool: ActiveTool) => void;
   toggleCompliance: () => void;
   setComplianceOpen: (open: boolean) => void;
+  toggleAi: () => void;
+  setAiOpen: (open: boolean) => void;
   selectWall: (id: string | null) => void;
   selectOpening: (id: string | null) => void;
   clearSelection: () => void;
@@ -108,6 +111,11 @@ type FloorPlanState = {
   ) => string | null;
   updateOpening: (id: string, patch: Partial<Omit<Opening, "id">>) => void;
   deleteOpening: (id: string) => void;
+  importPlan: (
+    walls: Wall[],
+    openings: Opening[],
+    options?: { replace?: boolean; name?: string },
+  ) => { wallCount: number; openingCount: number };
   loadScene: (scene: SceneFile) => void;
   resetScene: () => void;
 };
@@ -122,14 +130,38 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
   selectedWallId: null,
   selectedOpeningId: null,
   complianceOpen: true,
+  aiOpen: false,
   sceneName: initialScene.name ?? "Untitled Floor Plan",
   revision: 0,
 
   setActiveView: (activeView) => set({ activeView }),
   setActiveTool: (activeTool) => set({ activeTool }),
   toggleCompliance: () =>
-    set((state) => ({ complianceOpen: !state.complianceOpen })),
-  setComplianceOpen: (complianceOpen) => set({ complianceOpen }),
+    set((state) => {
+      const complianceOpen = !state.complianceOpen;
+      return {
+        complianceOpen,
+        aiOpen: complianceOpen ? false : state.aiOpen,
+      };
+    }),
+  setComplianceOpen: (complianceOpen) =>
+    set((state) => ({
+      complianceOpen,
+      aiOpen: complianceOpen ? false : state.aiOpen,
+    })),
+  toggleAi: () =>
+    set((state) => {
+      const aiOpen = !state.aiOpen;
+      return {
+        aiOpen,
+        complianceOpen: aiOpen ? false : state.complianceOpen,
+      };
+    }),
+  setAiOpen: (aiOpen) =>
+    set((state) => ({
+      aiOpen,
+      complianceOpen: aiOpen ? false : state.complianceOpen,
+    })),
 
   selectWall: (id) =>
     set({ selectedWallId: id, selectedOpeningId: null }),
@@ -234,6 +266,41 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
       selectedOpeningId:
         state.selectedOpeningId === id ? null : state.selectedOpeningId,
     })),
+
+  importPlan: (walls, openings, options) => {
+    const replace = options?.replace ?? true;
+    const wallIds = new Map<string, string>();
+    const remappedWalls = walls.map((wall) => {
+      const id = createId();
+      wallIds.set(wall.id, id);
+      return { ...wall, id };
+    });
+    const remappedOpenings: Opening[] = [];
+
+    for (const opening of openings) {
+      const wallId = wallIds.get(opening.wallId);
+      if (!wallId) continue;
+      remappedOpenings.push({ ...opening, id: createId(), wallId });
+    }
+
+    set((state) => ({
+      walls: replace ? remappedWalls : [...state.walls, ...remappedWalls],
+      openings: replace
+        ? remappedOpenings
+        : [...state.openings, ...remappedOpenings],
+      sceneName: options?.name ?? state.sceneName,
+      activeView: "3d",
+      activeTool: "select",
+      selectedWallId: null,
+      selectedOpeningId: null,
+      revision: state.revision + 1,
+    }));
+
+    return {
+      wallCount: remappedWalls.length,
+      openingCount: remappedOpenings.length,
+    };
+  },
 
   loadScene: (scene) =>
     set((state) => ({

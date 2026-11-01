@@ -7,6 +7,13 @@
     "core:default",
     "opener:default",
     "dialog:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "http://localhost:11434/**" },
+        { "url": "http://127.0.0.1:11434/**" }
+      ]
+    },
     "fs:default",
     {
       "identifier": "fs:allow-read-text-file",
