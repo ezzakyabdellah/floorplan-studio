@@ -685,12 +685,28 @@ export function AppShell() {
   const openImporter = useCallback(() => setImporterOpen(true), []);
   const closeImporter = useCallback(() => setImporterOpen(false), []);
   const handleImported = useCallback(
-    (wallCount: number, openingCount: number, name: string) => {
+    (
+      wallCount: number,
+      openingCount: number,
+      name: string,
+      info?: { source: "onnx" | "heuristic"; fallbackReason?: string },
+    ) => {
       const openingLabel =
         openingCount > 0
           ? ` and ${openingCount} opening${openingCount === 1 ? "" : "s"}`
           : "";
-      notify(`Imported ${wallCount} walls${openingLabel} from ${name}`, "success");
+      const engineLabel =
+        info?.source === "onnx" ? " with local ONNX vision" : "";
+      const fallbackLabel =
+        info?.source === "heuristic" && info.fallbackReason
+          ? ` (${info.fallbackReason})`
+          : "";
+      notify(
+        `Imported ${wallCount} walls${openingLabel} from ${name}${engineLabel}${fallbackLabel}`,
+        info?.source === "heuristic" && info.fallbackReason
+          ? "info"
+          : "success",
+      );
     },
     [notify],
   );

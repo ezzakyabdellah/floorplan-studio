@@ -10,6 +10,12 @@ export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
 
   clearScreen: false,
+  optimizeDeps: {
+    exclude: ["onnxruntime-web", "onnxruntime-web/wasm"],
+  },
+  worker: {
+    format: "es",
+  },
   server: {
     port: 1420,
     strictPort: true,

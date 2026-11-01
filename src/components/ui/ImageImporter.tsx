@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  CheckCircle2,
   FileImage,
   ImagePlus,
   Loader2,
   Replace,
+  ScanLine,
   SlidersHorizontal,
+  Sparkles,
   Upload,
   Wand2,
   X,
@@ -14,16 +17,34 @@ import { useFloorPlanStore } from "../../store/floorPlanStore";
 import {
   loadImageFromFile,
   renderBlueprintPreview,
-  vectorizeFloorPlanImage,
   type ImageVectorOptions,
   type PreviewStats,
 } from "../../utils/imageToVector";
+import {
+  VISION_MODEL_URL,
+  checkVisionModelAvailability,
+  extractVectorsFromImage,
+  type VisionModelAvailability,
+  type VisionSource,
+} from "../../services/visionModelService";
 import { cn } from "../../utils/cn";
+
+type VectorEngine = "vision" | "heuristic";
+
+type ImportInfo = {
+  source: VisionSource;
+  fallbackReason?: string;
+};
 
 type ImageImporterProps = {
   open: boolean;
   onClose: () => void;
-  onImported: (wallCount: number, openingCount: number, name: string) => void;
+  onImported: (
+    wallCount: number,
+    openingCount: number,
+    name: string,
+    info?: ImportInfo,
+  ) => void;
 };
 
 const ACCEPTED_TYPES = ["image/png", "image/jpeg"];
@@ -46,6 +67,11 @@ export function ImageImporter({
   const [invert, setInvert] = useState(false);
   const [feetPer100Pixels, setFeetPer100Pixels] = useState(10);
   const [replace, setReplace] = useState(true);
+  const [engine, setEngine] = useState<VectorEngine>("vision");
+  const [modelStatus, setModelStatus] =
+    useState<VisionModelAvailability | null>(null);
+  const [checkingModel, setCheckingModel] = useState(false);
+  const [stage, setStage] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewStats | null>(null);
   const [loadingImage, setLoadingImage] = useState(false);
   const [rendering, setRendering] = useState(false);
@@ -79,6 +105,7 @@ export function ImageImporter({
     setLoadingImage(false);
     setRendering(false);
     setVectorizing(false);
+    setStage(null);
     dragDepth.current = 0;
     previewToken.current += 1;
   }, []);
@@ -86,6 +113,22 @@ export function ImageImporter({
   useEffect(() => {
     if (!open) reset();
   }, [open, reset]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setCheckingModel(true);
+    checkVisionModelAvailability(true)
+      .then((status) => {
+        if (!cancelled) setModelStatus(status);
+      })
+      .finally(() => {
+        if (!cancelled) setCheckingModel(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -165,17 +208,29 @@ export function ImageImporter({
   };
 
   const handleConfirm = async () => {
-    if (!file || !preview || vectorizing) return;
+    if (!file || vectorizing) return;
+    if (engine === "heuristic" && !preview) return;
     setVectorizing(true);
     setError(null);
+    setStage(
+      engine === "vision" && modelStatus?.available
+        ? "Running Local ONNX Vision Model..."
+        : "Vectorizing blueprint...",
+    );
     try {
-      const plan = await vectorizeFloorPlanImage(file, options);
+      const plan = await extractVectorsFromImage(file, {
+        ...options,
+        preferHeuristic: engine === "heuristic",
+      });
       const name = baseName(file);
       const result = importPlan(plan.walls, plan.openings, {
         replace,
         name: replace ? name : undefined,
       });
-      onImported(result.wallCount, result.openingCount, name);
+      onImported(result.wallCount, result.openingCount, name, {
+        source: plan.source,
+        fallbackReason: plan.fallbackReason,
+      });
       onClose();
     } catch (importError) {
       setError(
@@ -185,6 +240,7 @@ export function ImageImporter({
       );
     } finally {
       setVectorizing(false);
+      setStage(null);
     }
   };
 
@@ -194,7 +250,10 @@ export function ImageImporter({
     preview && preview.width * preview.height > 0
       ? (preview.wallPixels / (preview.width * preview.height)) * 100
       : 0;
-  const canImport = Boolean(file && preview && preview.wallPixels > 0) && !busy;
+  const canImport =
+    Boolean(file) &&
+    !busy &&
+    (engine === "vision" || Boolean(preview && preview.wallPixels > 0));
 
   return (
     <div
@@ -345,6 +404,76 @@ export function ImageImporter({
 
             <div className="space-y-4">
               <div className="rounded-xl border border-line/70 bg-black/20 p-3">
+                <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  <ScanLine className="h-3.5 w-3.5" />
+                  Vector engine
+                </p>
+
+                <div className="grid grid-cols-2 gap-1 rounded-lg border border-line bg-black/25 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setEngine("vision")}
+                    className={cn(
+                      "flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium transition",
+                      engine === "vision"
+                        ? "bg-accent/15 text-accent"
+                        : "text-slate-400 hover:text-slate-200",
+                    )}
+                    aria-pressed={engine === "vision"}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    AI Vision
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEngine("heuristic")}
+                    className={cn(
+                      "flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium transition",
+                      engine === "heuristic"
+                        ? "bg-accent/15 text-accent"
+                        : "text-slate-400 hover:text-slate-200",
+                    )}
+                    aria-pressed={engine === "heuristic"}
+                  >
+                    <Wand2 className="h-3.5 w-3.5" />
+                    Heuristic
+                  </button>
+                </div>
+
+                <div
+                  className={cn(
+                    "mt-2 flex items-start gap-1.5 rounded-lg border px-2 py-1.5 text-[10px] leading-relaxed",
+                    checkingModel
+                      ? "border-line bg-panel/60 text-slate-400"
+                      : modelStatus?.available
+                        ? "border-emerald-500/20 bg-emerald-500/[0.06] text-emerald-200"
+                        : "border-amber-500/20 bg-amber-500/[0.06] text-amber-200",
+                  )}
+                >
+                  {checkingModel ? (
+                    <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin" />
+                  ) : modelStatus?.available ? (
+                    <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                  )}
+                  <span>
+                    {checkingModel
+                      ? "Checking for a local ONNX model..."
+                      : modelStatus?.available
+                        ? "ONNX model ready - inference runs offline."
+                        : "No ONNX model found - the heuristic fallback will be used."}
+                  </span>
+                </div>
+
+                {!checkingModel && !modelStatus?.available ? (
+                  <p className="mt-2 break-all font-mono text-[9px] leading-relaxed text-slate-500">
+                    Add weights at {VISION_MODEL_URL}
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="rounded-xl border border-line/70 bg-black/20 p-3">
                 <p className="mb-3 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                   <SlidersHorizontal className="h-3.5 w-3.5" />
                   Detection
@@ -481,7 +610,9 @@ export function ImageImporter({
 
         <div className="flex items-center justify-between gap-3 border-t border-line px-5 py-3">
           <p className="text-[10px] text-slate-500">
-            Wall gaps and symbols are detected as doors or windows.
+            {engine === "vision" && !modelStatus?.available
+              ? "ONNX weights missing. The heuristic vectorizer will run instead."
+              : "Wall gaps and symbols are detected as doors or windows."}
           </p>
           <div className="flex items-center gap-2">
             <button
@@ -500,12 +631,16 @@ export function ImageImporter({
             >
               {vectorizing ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : engine === "vision" ? (
+                <Sparkles className="h-3.5 w-3.5" />
               ) : (
                 <Wand2 className="h-3.5 w-3.5" />
               )}
               {vectorizing
-                ? "Processing plan…"
-                : "Process Blueprint into 3D"}
+                ? (stage ?? "Processing plan...")
+                : engine === "vision"
+                  ? "Extract Vectors with AI"
+                  : "Process Blueprint into 3D"}
             </button>
           </div>
         </div>
