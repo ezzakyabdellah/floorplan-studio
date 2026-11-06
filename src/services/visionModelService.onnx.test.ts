@@ -1,0 +1,385 @@
+import fs from "node:fs";
+import path from "node:path";
+import { InferenceSession, Tensor } from "onnxruntime-node";
+import sharp from "sharp";
+import { beforeAll, describe, expect, it } from "vitest";
+import {
+  VISION_INPUT_SIZE,
+  letterboxTransform,
+  parseDetections,
+  planarFloat32FromPixels,
+  processVisionOutputs,
+  segClassRole,
+  segmentationOutputs,
+  segmentationPlan,
+  segmentationToMasks,
+  type VisionOutputMap,
+} from "./visionModelService";
+
+const ROOT = process.cwd();
+const MODEL_PATH = path.resolve(ROOT, "public/models/floorplan-layout.onnx");
+const SAMPLES = ["plan01.jpeg", "plan02.jpeg"].map((name) =>
+  path.resolve(ROOT, "src/samples", name),
+);
+
+let session: InferenceSession;
+
+// Colors measured from the original v_plan01_overlay.png.
+const OVERLAY_PALETTE: Record<number, [number, number, number]> = {
+  1: [128, 138, 239], // wall
+  2: [162, 221, 119], // door
+  3: [231, 188, 123], // window
+};
+const OVERLAY_DIM = 0.45;
+
+beforeAll(async () => {
+  session = await InferenceSession.create(MODEL_PATH);
+  console.log("[onnx] inputs", session.inputNames);
+  console.log("[onnx] outputs", session.outputNames);
+});
+
+function buildOverlayPixels(
+  rgb: Uint8Array,
+  logits: Float32Array | Uint8Array,
+  channels: number,
+  width: number,
+  height: number,
+): Buffer {
+  const plane = width * height;
+  const out = Buffer.alloc(plane * 3);
+
+  for (let index = 0; index < plane; index += 1) {
+    let bestChannel = 0;
+    let bestValue = Number.NEGATIVE_INFINITY;
+    for (let channel = 0; channel < channels; channel += 1) {
+      const value = Number(logits[channel * plane + index]);
+      if (value > bestValue) {
+        bestValue = value;
+        bestChannel = channel;
+      }
+    }
+
+    const target = index * 3;
+    const color = OVERLAY_PALETTE[bestChannel];
+    if (color) {
+      out[target] = color[0];
+      out[target + 1] = color[1];
+      out[target + 2] = color[2];
+      continue;
+    }
+
+    const source = index * 3;
+    const gray = Math.round(
+      (0.299 * rgb[source] +
+        0.587 * rgb[source + 1] +
+        0.114 * rgb[source + 2]) *
+        OVERLAY_DIM,
+    );
+    out[target] = gray;
+    out[target + 1] = gray;
+    out[target + 2] = gray;
+  }
+
+  return out;
+}
+
+function pixelStats(data: ArrayLike<number>) {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  let sum = 0;
+  for (let index = 0; index < data.length; index += 1) {
+    const value = Number(data[index]);
+    if (value < min) min = value;
+    if (value > max) max = value;
+    sum += value;
+  }
+  return {
+    min: Number(min.toFixed(3)),
+    max: Number(max.toFixed(3)),
+    mean: Number((sum / Math.max(1, data.length)).toFixed(3)),
+  };
+}
+
+function channelStats(
+  data: ArrayLike<number>,
+  channels: number,
+  width: number,
+  height: number,
+) {
+  const plane = width * height;
+  return Array.from({ length: channels }, (_, channel) => {
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    let sum = 0;
+    let aboveHalf = 0;
+    for (let index = 0; index < plane; index += 1) {
+      const value = Number(data[channel * plane + index]);
+      if (value < min) min = value;
+      if (value > max) max = value;
+      sum += value;
+      if (value > 0.5) aboveHalf += 1;
+    }
+    return {
+      channel,
+      role: segClassRole(channel, channels) ?? "ignored",
+      min: Number(min.toFixed(3)),
+      max: Number(max.toFixed(3)),
+      mean: Number((sum / plane).toFixed(3)),
+      aboveHalfPct: Number(((aboveHalf / plane) * 100).toFixed(1)),
+    };
+  });
+}
+
+function classHistogram(
+  data: ArrayLike<number>,
+  channels: number,
+  width: number,
+  height: number,
+) {
+  const plane = width * height;
+  const counts = new Array<number>(channels).fill(0);
+  for (let index = 0; index < plane; index += 1) {
+    let bestChannel = 0;
+    let bestValue = Number.NEGATIVE_INFINITY;
+    for (let channel = 0; channel < channels; channel += 1) {
+      const value = Number(data[channel * plane + index]);
+      if (value > bestValue) {
+        bestValue = value;
+        bestChannel = channel;
+      }
+    }
+    counts[bestChannel] += 1;
+  }
+  return counts.map((pixels, channel) => ({
+    class: channel,
+    role: segClassRole(channel, channels) ?? "background/ignored",
+    pixels,
+    pct: Number(((pixels / plane) * 100).toFixed(1)),
+  }));
+}
+
+function maskSummary(mask: Uint8Array, width: number, height: number) {
+  let pixels = 0;
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!mask[y * width + x]) continue;
+      pixels += 1;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  return {
+    pixels,
+    bbox: pixels > 0 ? `${minX},${minY} -> ${maxX},${maxY}` : "empty",
+  };
+}
+
+async function buildInput(samplePath: string) {
+  const metadata = await sharp(samplePath).metadata();
+  if (!metadata.width || !metadata.height) {
+    throw new Error(`Could not read dimensions for ${samplePath}`);
+  }
+
+  const transform = letterboxTransform(metadata.width, metadata.height);
+  const { data, info } = await sharp(samplePath)
+    .resize(VISION_INPUT_SIZE, VISION_INPUT_SIZE, {
+      fit: "contain",
+      background: { r: 114, g: 114, b: 114 },
+    })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  if (info.channels !== 3) {
+    throw new Error(`Expected 3 RGB channels, got ${info.channels}`);
+  }
+
+  return {
+    transform,
+    rgb: data,
+    tensor: new Tensor(
+      "float32",
+      planarFloat32FromPixels(data, 3),
+      [1, 3, VISION_INPUT_SIZE, VISION_INPUT_SIZE],
+    ),
+  };
+}
+
+describe.each(SAMPLES)("real ONNX model on %s", (samplePath) => {
+  it("walks every pipeline stage with real model output", async () => {
+    const sampleName = path.basename(samplePath);
+    console.group(`\n=== ${sampleName} ===`);
+
+    // ---------------------------------------------------------------- STEP 1
+    console.group("STEP 1 - preprocess: image -> letterboxed [1,3,640,640]");
+    const { transform, rgb, tensor } = await buildInput(samplePath);
+    console.log("source image", {
+      width: transform.imageWidth,
+      height: transform.imageHeight,
+    });
+    console.log("letterbox", {
+      scale: Number(transform.scale.toFixed(4)),
+      padX: Number(transform.padX.toFixed(2)),
+      padY: Number(transform.padY.toFixed(2)),
+    });
+    console.log("tensor", {
+      dims: tensor.dims,
+      stats: pixelStats(tensor.data as Float32Array),
+    });
+    console.groupEnd();
+
+    // ---------------------------------------------------------------- STEP 2
+    console.group("STEP 2 - inference: session.run(tensor)");
+    const inputName = session.inputNames[0];
+    const outputs = await session.run({ [inputName]: tensor });
+
+    const outputMap: VisionOutputMap = {};
+    for (const [name, output] of Object.entries(outputs)) {
+      const value = output as Tensor;
+      outputMap[name] = {
+        data: value.data as Float32Array | Uint8Array,
+        dims: value.dims,
+      };
+    }
+
+    const primaryName = session.outputNames[0];
+    const primary = outputMap[primaryName];
+    const [, channels, height, width] = primary.dims as number[];
+    console.log("output tensor", { name: primaryName, dims: primary.dims });
+    console.table(channelStats(primary.data, channels, width, height));
+    console.log("argmax class distribution");
+    console.table(classHistogram(primary.data, channels, width, height));
+    console.groupEnd();
+
+    // ---------------------------------------------------------------- STEP 3
+    console.group("STEP 3 - parseDetections (box path)");
+    const detections = parseDetections(primary.data, primary.dims);
+    console.log(
+      "result",
+      detections === null
+        ? "null - 4D logits are a segmentation tensor, not boxes"
+        : detections,
+    );
+    expect(detections).toBeNull();
+    console.groupEnd();
+
+    // ---------------------------------------------------------------- STEP 4
+    console.group("STEP 4 - segmentationOutputs: recognise mask layout");
+    const segmentation = segmentationOutputs(outputMap);
+    expect(segmentation).not.toBeNull();
+    if (!segmentation) throw new Error("No segmentation output found.");
+    console.log("mask layout", {
+      channels: segmentation.channels,
+      width: segmentation.width,
+      height: segmentation.height,
+      layout: "[1, classes, height, width]",
+    });
+    console.groupEnd();
+
+    // ---------------------------------------------------------------- STEP 5
+    console.group("STEP 5 - segmentationToMasks: argmax -> binary masks");
+    const masks = segmentationToMasks(
+      segmentation.data,
+      segmentation.channels,
+      segmentation.width,
+      segmentation.height,
+    );
+    console.table(
+      masks.map((mask, channel) => ({
+        channel,
+        role: segClassRole(channel, segmentation.channels) ?? "ignored",
+        ...maskSummary(mask, segmentation.width, segmentation.height),
+      })),
+    );
+    console.groupEnd();
+
+    // -------------------------------------------------------------- STEP 5b
+    console.group("STEP 5b - write colored overlay image");
+    const overlayPixels = buildOverlayPixels(
+      rgb,
+      primary.data,
+      channels,
+      width,
+      height,
+    );
+    const base = path.basename(samplePath, path.extname(samplePath));
+    const overlayPath = path.resolve(ROOT, "debug", `v_${base}_overlay.png`);
+    fs.mkdirSync(path.dirname(overlayPath), { recursive: true });
+    await sharp(overlayPixels, {
+      raw: { width, height, channels: 3 },
+    })
+      .png()
+      .toFile(overlayPath);
+    const overlayMeta = await sharp(overlayPath).metadata();
+    console.log("overlay written ->", path.relative(ROOT, overlayPath));
+    console.log("overlay size", {
+      width: overlayMeta.width,
+      height: overlayMeta.height,
+    });
+    expect(overlayMeta.width).toBe(width);
+    expect(overlayMeta.height).toBe(height);
+    console.groupEnd();
+
+    // ---------------------------------------------------------------- STEP 6
+    console.group("STEP 6 - segmentationPlan: masks -> image-space vectors");
+    const vectorized = segmentationPlan(
+      masks,
+      segmentation.channels,
+      segmentation.width,
+      segmentation.height,
+      transform,
+    );
+    console.log(
+      "segments by orientation",
+      vectorized.segments.reduce<Record<string, number>>((acc, segment) => {
+        acc[segment.orientation] = (acc[segment.orientation] ?? 0) + 1;
+        return acc;
+      }, {}),
+    );
+    console.log(
+      "openings by type",
+      vectorized.openings.reduce<Record<string, number>>((acc, opening) => {
+        acc[opening.type] = (acc[opening.type] ?? 0) + 1;
+        return acc;
+      }, {}),
+    );
+    console.log("first segments (image pixels)");
+    console.table(vectorized.segments.slice(0, 10));
+    console.log("first openings (image pixels)");
+    console.table(vectorized.openings.slice(0, 10));
+    console.groupEnd();
+
+    // ---------------------------------------------------------------- STEP 7
+    console.group("STEP 7 - processVisionOutputs: production path");
+    const result = processVisionOutputs(outputMap, transform, 0.1);
+    console.log("usedSegmentation", result.usedSegmentation);
+    console.log("walls (feet)");
+    console.table(result.plan.walls.slice(0, 10));
+    console.log("openings assigned to walls");
+    console.table(result.plan.openings);
+    console.log("world", {
+      width: Number(result.plan.worldWidth.toFixed(2)),
+      height: Number(result.plan.worldHeight.toFixed(2)),
+    });
+    console.groupEnd();
+
+    console.groupEnd();
+
+    expect(result.usedSegmentation).toBe(true);
+    expect(result.plan.walls.length).toBeGreaterThan(0);
+
+    for (const wall of result.plan.walls) {
+      expect(Number.isFinite(wall.x1)).toBe(true);
+      expect(Number.isFinite(wall.y1)).toBe(true);
+      expect(Number.isFinite(wall.x2)).toBe(true);
+      expect(Number.isFinite(wall.y2)).toBe(true);
+      expect(wall.thickness).toBeGreaterThan(0);
+    }
+  });
+});

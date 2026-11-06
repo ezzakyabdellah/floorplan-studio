@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Bug,
   CheckCircle2,
   FileImage,
   ImagePlus,
@@ -27,6 +28,7 @@ import {
   type VisionModelAvailability,
   type VisionSource,
 } from "../../services/visionModelService";
+import { debugVisionPipeline } from "../../services/visionDebug";
 import { cn } from "../../utils/cn";
 
 type VectorEngine = "vision" | "heuristic";
@@ -76,6 +78,7 @@ export function ImageImporter({
   const [loadingImage, setLoadingImage] = useState(false);
   const [rendering, setRendering] = useState(false);
   const [vectorizing, setVectorizing] = useState(false);
+  const [debugging, setDebugging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -83,7 +86,7 @@ export function ImageImporter({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragDepth = useRef(0);
   const previewToken = useRef(0);
-  const busy = loadingImage || rendering || vectorizing;
+  const busy = loadingImage || rendering || vectorizing || debugging;
 
   const options = useMemo<ImageVectorOptions>(
     () => ({
@@ -241,6 +244,23 @@ export function ImageImporter({
     } finally {
       setVectorizing(false);
       setStage(null);
+    }
+  };
+
+  const handleDebugOnnx = async () => {
+    if (!file || debugging) return;
+    setDebugging(true);
+    setError(null);
+    try {
+      await debugVisionPipeline(file, options);
+    } catch (debugError) {
+      setError(
+        debugError instanceof Error
+          ? debugError.message
+          : "ONNX debug run failed.",
+      );
+    } finally {
+      setDebugging(false);
     }
   };
 
@@ -615,6 +635,22 @@ export function ImageImporter({
               : "Wall gaps and symbols are detected as doors or windows."}
           </p>
           <div className="flex items-center gap-2">
+            {import.meta.env.DEV ? (
+              <button
+                type="button"
+                onClick={() => void handleDebugOnnx()}
+                disabled={!file || busy}
+                title="Run the real ONNX model and log every stage (no heuristic fallback)"
+                className="flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[11px] font-medium text-slate-400 transition hover:bg-white/5 hover:text-slate-200 disabled:opacity-40"
+              >
+                {debugging ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Bug className="h-3.5 w-3.5" />
+                )}
+                Debug ONNX
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={onClose}

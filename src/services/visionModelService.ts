@@ -31,6 +31,8 @@ export type VisionSource = "onnx" | "heuristic";
 
 export type VisionExtractionOptions = ImageVectorOptions & {
   preferHeuristic?: boolean;
+  allowFallback?: boolean;
+  debug?: (event: VisionDebugEvent) => void;
   signal?: AbortSignal;
 };
 
@@ -41,10 +43,64 @@ export type VisionExtractionResult = VectorizedPlan & {
   fallbackReason?: string;
 };
 
+export type VisionOutputMap = Record<
+  string,
+  { data: Float32Array | Uint8Array; dims: readonly number[] }
+>;
+
+export type VisionDebugEvent =
+  | { stage: "availability"; availability: VisionModelAvailability }
+  | {
+      stage: "input";
+      inputName: string;
+      dims: readonly number[];
+      transform: ImageTransform;
+      stats: { min: number; max: number };
+    }
+  | {
+      stage: "output";
+      name: string;
+      dims: readonly number[];
+      stats: { min: number; max: number };
+    }
+  | {
+      stage: "detections";
+      output: string;
+      parsed: boolean;
+      detectionCount: number;
+      classCount: number;
+    }
+  | {
+      stage: "detectionSegments";
+      segmentCount: number;
+      openingCount: number;
+      segments: PixelSegment[];
+      openings: PixelOpening[];
+    }
+  | {
+      stage: "segmentation";
+      channels: number;
+      width: number;
+      height: number;
+      segmentCount: number;
+      openingCount: number;
+      segments: PixelSegment[];
+      openings: PixelOpening[];
+    }
+  | {
+      stage: "plan";
+      wallCount: number;
+      openingCount: number;
+      worldWidth: number;
+      worldHeight: number;
+      walls: Wall[];
+      openings: Opening[];
+    };
+
 type OrtModule = typeof import("onnxruntime-web");
 type OrtSession = Awaited<ReturnType<OrtModule["InferenceSession"]["create"]>>;
 
-type ImageTransform = {
+export type ImageTransform = {
   imageWidth: number;
   imageHeight: number;
   scale: number;
@@ -52,9 +108,9 @@ type ImageTransform = {
   padY: number;
 };
 
-type Orientation = "h" | "v";
+export type Orientation = "h" | "v";
 
-type PixelSegment = {
+export type PixelSegment = {
   orientation: Orientation;
   start: number;
   end: number;
@@ -62,7 +118,7 @@ type PixelSegment = {
   thickness: number;
 };
 
-type PixelOpening = {
+export type PixelOpening = {
   type: OpeningType;
   minX: number;
   minY: number;
@@ -71,7 +127,7 @@ type PixelOpening = {
   score: number;
 };
 
-type Detection = {
+export type Detection = {
   x1: number;
   y1: number;
   x2: number;
@@ -80,7 +136,7 @@ type Detection = {
   score: number;
 };
 
-type ParsedDetections = {
+export type ParsedDetections = {
   detections: Detection[];
   classCount: number;
 };
@@ -100,6 +156,18 @@ const throwIfAborted = (signal?: AbortSignal) => {
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function emitDebug(
+  debug: VisionExtractionOptions["debug"],
+  event: VisionDebugEvent,
+) {
+  if (!debug) return;
+  try {
+    debug(event);
+  } catch {
+    // Debug logging must never break extraction.
+  }
 }
 
 // The model is optional so the app still works before large weights are added.
@@ -189,7 +257,7 @@ async function loadSession(signal?: AbortSignal): Promise<OrtSession> {
   return sessionPromise;
 }
 
-function letterboxTransform(
+export function letterboxTransform(
   width: number,
   height: number,
 ): ImageTransform {
@@ -213,6 +281,27 @@ function modelToImageX(x: number, transform: ImageTransform) {
 
 function modelToImageY(y: number, transform: ImageTransform) {
   return (y - transform.padY) / transform.scale;
+}
+
+// Convert an interleaved 640x640 RGB/RGBA buffer into a normalized CHW tensor.
+export function planarFloat32FromPixels(
+  pixels: ArrayLike<number>,
+  channels: 3 | 4,
+  size = VISION_INPUT_SIZE,
+  signal?: AbortSignal,
+): Float32Array {
+  const plane = size * size;
+  const values = new Float32Array(plane * 3);
+
+  for (let index = 0; index < plane; index += 1) {
+    const pixel = index * channels;
+    values[index] = Number(pixels[pixel]) / 255;
+    values[plane + index] = Number(pixels[pixel + 1]) / 255;
+    values[plane * 2 + index] = Number(pixels[pixel + 2]) / 255;
+    if ((index & 65535) === 0) throwIfAborted(signal);
+  }
+
+  return values;
 }
 
 // Letterbox to 640x640 and normalize RGB values into a CHW float tensor.
@@ -245,16 +334,12 @@ async function buildInputTensor(
     VISION_INPUT_SIZE,
     VISION_INPUT_SIZE,
   );
-  const plane = VISION_INPUT_SIZE * VISION_INPUT_SIZE;
-  const values = new Float32Array(plane * 3);
-
-  for (let index = 0; index < plane; index += 1) {
-    const pixel = index * 4;
-    values[index] = data[pixel] / 255;
-    values[plane + index] = data[pixel + 1] / 255;
-    values[plane * 2 + index] = data[pixel + 2] / 255;
-    if ((index & 65535) === 0) throwIfAborted(signal);
-  }
+  const values = planarFloat32FromPixels(
+    data,
+    4,
+    VISION_INPUT_SIZE,
+    signal,
+  );
 
   return {
     transform,
@@ -287,7 +372,7 @@ function readTensorValue(
 
 // Accept YOLO-style detections in either [1, attributes, boxes] or
 // [1, boxes, attributes] layout, with normalized or pixel coordinates.
-function parseDetections(
+export function parseDetections(
   data: Float32Array | Uint8Array | number[],
   dims: readonly number[],
 ): ParsedDetections | null {
@@ -384,7 +469,7 @@ function parseDetections(
   return boxes.length > 0 ? { detections: boxes, classCount } : null;
 }
 
-function classRole(
+export function classRole(
   classId: number,
   classCount: number,
 ): "wall" | OpeningType | null {
@@ -401,7 +486,7 @@ function classRole(
   return null;
 }
 
-function detectionSegments(
+export function detectionSegments(
   detections: Detection[],
   classCount: number,
   transform: ImageTransform,
@@ -803,7 +888,7 @@ function componentBoxes(
 }
 
 // Segmentation models output [1, classes, height, width] logits or one mask.
-function segmentationOutputs(
+export function segmentationOutputs(
   outputs: Record<string, { data: Float32Array | Uint8Array; dims: readonly number[] }>,
 ) {
   for (const tensor of Object.values(outputs)) {
@@ -847,7 +932,7 @@ function segmentationOutputs(
   return null;
 }
 
-function segmentationToMasks(
+export function segmentationToMasks(
   data: Float32Array | Uint8Array,
   channels: number,
   width: number,
@@ -893,7 +978,7 @@ function segmentationToMasks(
   return masks;
 }
 
-function segClassRole(
+export function segClassRole(
   classId: number,
   channels: number,
 ): "wall" | OpeningType | null {
@@ -910,7 +995,7 @@ function segClassRole(
   return null;
 }
 
-function segmentationPlan(
+export function segmentationPlan(
   masks: Uint8Array[],
   channels: number,
   width: number,
@@ -1108,7 +1193,7 @@ function bridgeOpenings(
   return mergePixelSegments(result);
 }
 
-function buildPlanFromSegments(
+export function buildPlanFromSegments(
   rawSegments: PixelSegment[],
   pixelOpenings: PixelOpening[],
   feetPerPixel: number,
@@ -1192,6 +1277,121 @@ function buildPlanFromSegments(
   };
 }
 
+export type ProcessedVisionOutputs = {
+  segments: PixelSegment[];
+  openings: PixelOpening[];
+  plan: ReturnType<typeof buildPlanFromSegments>;
+  usedSegmentation: boolean;
+};
+
+/**
+ * Converts raw ONNX output tensors into plan geometry. Shared by the live
+ * inference path and the real-model integration test so both run identical
+ * parsing, segmentation, and wall-building logic.
+ */
+export function processVisionOutputs(
+  outputs: VisionOutputMap,
+  transform: ImageTransform,
+  feetPerPixel: number,
+  options?: {
+    debug?: VisionExtractionOptions["debug"];
+    signal?: AbortSignal;
+  },
+): ProcessedVisionOutputs {
+  let segments: PixelSegment[] = [];
+  let pixelOpenings: PixelOpening[] = [];
+  let usedSegmentation = false;
+
+  for (const [outputName, output] of Object.entries(outputs)) {
+    emitDebug(options?.debug, {
+      stage: "output",
+      name: outputName,
+      dims: output.dims,
+      stats: tensorStats(output.data),
+    });
+
+    const detectionOutput = parseDetections(output.data, output.dims);
+    emitDebug(options?.debug, {
+      stage: "detections",
+      output: outputName,
+      parsed: Boolean(detectionOutput),
+      detectionCount: detectionOutput?.detections.length ?? 0,
+      classCount: detectionOutput?.classCount ?? 0,
+    });
+    if (!detectionOutput) continue;
+
+    const converted = detectionSegments(
+      detectionOutput.detections,
+      detectionOutput.classCount,
+      transform,
+      feetPerPixel,
+    );
+    emitDebug(options?.debug, {
+      stage: "detectionSegments",
+      segmentCount: converted.segments.length,
+      openingCount: converted.openings.length,
+      segments: converted.segments,
+      openings: converted.openings,
+    });
+    segments = [...segments, ...converted.segments];
+    pixelOpenings = [...pixelOpenings, ...converted.openings];
+  }
+
+  if (segments.length === 0) {
+    const segmentation = segmentationOutputs(outputs);
+
+    if (segmentation) {
+      throwIfAborted(options?.signal);
+      const masks = segmentationToMasks(
+        segmentation.data,
+        segmentation.channels,
+        segmentation.width,
+        segmentation.height,
+      );
+      const converted = segmentationPlan(
+        masks,
+        segmentation.channels,
+        segmentation.width,
+        segmentation.height,
+        transform,
+        options?.signal,
+      );
+      segments = converted.segments;
+      pixelOpenings = converted.openings;
+      usedSegmentation = true;
+      emitDebug(options?.debug, {
+        stage: "segmentation",
+        channels: segmentation.channels,
+        width: segmentation.width,
+        height: segmentation.height,
+        segmentCount: segments.length,
+        openingCount: pixelOpenings.length,
+        segments,
+        openings: pixelOpenings,
+      });
+    }
+  }
+
+  if (segments.length === 0) {
+    throw new Error(
+      "The ONNX model returned no detectable walls. Check that the model outputs boxes or a wall segmentation mask.",
+    );
+  }
+
+  const plan = buildPlanFromSegments(segments, pixelOpenings, feetPerPixel);
+  emitDebug(options?.debug, {
+    stage: "plan",
+    wallCount: plan.walls.length,
+    openingCount: plan.openings.length,
+    worldWidth: plan.worldWidth,
+    worldHeight: plan.worldHeight,
+    walls: plan.walls,
+    openings: plan.openings,
+  });
+
+  return { segments, openings: pixelOpenings, plan, usedSegmentation };
+}
+
 async function heuristicExtraction(
   file: File,
   options: VisionExtractionOptions,
@@ -1230,69 +1430,30 @@ async function onnxExtraction(
     throw new Error("The ONNX model does not expose an input tensor.");
   }
 
+  emitDebug(options.debug, {
+    stage: "input",
+    inputName,
+    dims: tensor.dims,
+    transform,
+    stats: tensorStats(tensor.data as Float32Array),
+  });
+
   const outputs = await session.run({ [inputName]: tensor });
   throwIfAborted(options.signal);
 
+  const outputMap: VisionOutputMap = {};
+  for (const [outputName, output] of Object.entries(outputs)) {
+    outputMap[outputName] = {
+      data: output.data as Float32Array | Uint8Array,
+      dims: output.dims,
+    };
+  }
+
   const feetPerPixel = clamp(options.feetPer100Pixels, 1, 100) / 100;
-  let segments: PixelSegment[] = [];
-  let pixelOpenings: PixelOpening[] = [];
-
-  for (const output of Object.values(outputs)) {
-    const detectionOutput = parseDetections(
-      output.data as Float32Array | Uint8Array,
-      output.dims,
-    );
-    if (!detectionOutput) continue;
-
-    const converted = detectionSegments(
-      detectionOutput.detections,
-      detectionOutput.classCount,
-      transform,
-      feetPerPixel,
-    );
-    segments = [...segments, ...converted.segments];
-    pixelOpenings = [...pixelOpenings, ...converted.openings];
-  }
-
-  if (segments.length === 0) {
-    const segmentation = segmentationOutputs(
-      outputs as unknown as Record<
-        string,
-        {
-          data: Float32Array | Uint8Array;
-          dims: readonly number[];
-        }
-      >,
-    );
-
-    if (segmentation) {
-      throwIfAborted(options.signal);
-      const masks = segmentationToMasks(
-        segmentation.data,
-        segmentation.channels,
-        segmentation.width,
-        segmentation.height,
-      );
-      const converted = segmentationPlan(
-        masks,
-        segmentation.channels,
-        segmentation.width,
-        segmentation.height,
-        transform,
-        options.signal,
-      );
-      segments = converted.segments;
-      pixelOpenings = converted.openings;
-    }
-  }
-
-  if (segments.length === 0) {
-    throw new Error(
-      "The ONNX model returned no detectable walls. Check that the model outputs boxes or a wall segmentation mask.",
-    );
-  }
-
-  const plan = buildPlanFromSegments(segments, pixelOpenings, feetPerPixel);
+  const { plan } = processVisionOutputs(outputMap, transform, feetPerPixel, {
+    debug: options.debug,
+    signal: options.signal,
+  });
 
   return {
     ...plan,
@@ -1321,10 +1482,14 @@ export async function extractVectorsFromImage(
     );
   }
 
+  const allowFallback = options.allowFallback !== false;
   const availability = await checkVisionModelAvailability();
+  emitDebug(options.debug, { stage: "availability", availability });
+
   if (!availability.available) {
     const reason =
       availability.reason ?? "Local ONNX vision model is not available.";
+    if (!allowFallback) throw new Error(reason);
     console.warn(`[vision] ${reason} Falling back to the heuristic vectorizer.`);
     return heuristicExtraction(file, options, reason, startedAt);
   }
@@ -1337,6 +1502,7 @@ export async function extractVectorsFromImage(
     }
 
     const reason = `ONNX inference failed: ${errorMessage(error, "unknown error")}`;
+    if (!allowFallback) throw new Error(reason);
     console.warn(`[vision] ${reason} Falling back to the heuristic vectorizer.`);
     return heuristicExtraction(file, options, reason, startedAt);
   }
