@@ -51,6 +51,18 @@ function printStage(event: VisionDebugEvent) {
       console.table(event.openings);
       console.groupEnd();
       break;
+    case "sanitize":
+      console.log("[vision:sanitize]", {
+        droppedSegments: event.droppedSegments,
+        recoveredSegments: event.recoveredSegments,
+      });
+      break;
+    case "planSanitize":
+      console.log("[vision:planSanitize]", {
+        recoveredWalls: event.recoveredWalls,
+        recoveredOpenings: event.recoveredOpenings,
+      });
+      break;
     case "plan":
       console.groupCollapsed(
         `[vision:plan] ${event.wallCount} walls, ${event.openingCount} openings`,

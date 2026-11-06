@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildPlanFromSegments,
   classRole,
+  dedupeParallelSegments,
   detectionSegments,
   parseDetections,
   type Detection,
@@ -334,5 +335,58 @@ describe("stage 4 - buildPlanFromSegments", () => {
     expect(() => buildPlanFromSegments(thick, [], 0.1)).toThrow(
       /usable wall geometry/,
     );
+  });
+
+  it("rejects sliver walls below the minimum thickness", () => {
+    const sliver: PixelSegment[] = [
+      { orientation: "h", start: 0, end: 100, center: 10, thickness: 0.5 },
+    ];
+    expect(() => buildPlanFromSegments(sliver, [], 0.1)).toThrow(
+      /usable wall geometry/,
+    );
+  });
+});
+
+describe("stage 5 - dedupeParallelSegments", () => {
+  it("merges a hollow double-line wall into one wall", () => {
+    const segments: PixelSegment[] = [
+      { orientation: "h", start: 0, end: 100, center: 10, thickness: 2 },
+      { orientation: "h", start: 0, end: 100, center: 20, thickness: 2 },
+    ];
+
+    const result = dedupeParallelSegments(segments, 0.1);
+    log("merged hollow wall", result);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].orientation).toBe("h");
+    expect(result[0].start).toBe(0);
+    expect(result[0].end).toBe(100);
+    expect(result[0].center).toBeCloseTo(15);
+    expect(result[0].thickness).toBeCloseTo(12);
+  });
+
+  it("keeps genuinely separate parallel walls", () => {
+    const segments: PixelSegment[] = [
+      { orientation: "h", start: 0, end: 100, center: 10, thickness: 2 },
+      { orientation: "h", start: 0, end: 100, center: 60, thickness: 2 },
+    ];
+
+    const result = dedupeParallelSegments(segments, 0.1);
+    log("separate parallel walls", result);
+
+    expect(result).toHaveLength(2);
+  });
+
+  it("drops a thin edge sliver inside a thicker wall band", () => {
+    const segments: PixelSegment[] = [
+      { orientation: "h", start: 0, end: 100, center: 10, thickness: 2 },
+      { orientation: "h", start: 0, end: 100, center: 10.5, thickness: 20 },
+    ];
+
+    const result = dedupeParallelSegments(segments, 0.1);
+    log("edge sliver removed", result);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].thickness).toBe(20);
   });
 });

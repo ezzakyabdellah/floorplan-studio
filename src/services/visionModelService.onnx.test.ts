@@ -3,6 +3,12 @@ import path from "node:path";
 import { InferenceSession, Tensor } from "onnxruntime-node";
 import sharp from "sharp";
 import { beforeAll, describe, expect, it } from "vitest";
+import type { Wall } from "../types/floorplan";
+import {
+  OVERLAY_DIM,
+  OVERLAY_PALETTE,
+  validatePlanOverlay,
+} from "./planOverlayValidation";
 import {
   VISION_INPUT_SIZE,
   letterboxTransform,
@@ -24,19 +30,59 @@ const SAMPLES = ["plan01.jpeg", "plan02.jpeg"].map((name) =>
 
 let session: InferenceSession;
 
-// Colors measured from the original v_plan01_overlay.png.
-const OVERLAY_PALETTE: Record<number, [number, number, number]> = {
-  1: [128, 138, 239], // wall
-  2: [162, 221, 119], // door
-  3: [231, 188, 123], // window
-};
-const OVERLAY_DIM = 0.45;
-
 beforeAll(async () => {
   session = await InferenceSession.create(MODEL_PATH);
   console.log("[onnx] inputs", session.inputNames);
   console.log("[onnx] outputs", session.outputNames);
 });
+
+function countDuplicateWalls(walls: Wall[]): number {
+  let count = 0;
+
+  for (let i = 0; i < walls.length; i += 1) {
+    const a = walls[i];
+    const aHorizontal = Math.abs(a.y1 - a.y2) <= 1e-6;
+
+    for (let j = i + 1; j < walls.length; j += 1) {
+      const b = walls[j];
+      const bHorizontal = Math.abs(b.y1 - b.y2) <= 1e-6;
+      if (aHorizontal !== bHorizontal) continue;
+
+      const [aStart, aEnd, aCenter, bStart, bEnd, bCenter] = aHorizontal
+        ? [a.x1, a.x2, a.y1, b.x1, b.x2, b.y1]
+        : [a.y1, a.y2, a.x1, b.y1, b.y2, b.x1];
+
+      const overlap = Math.min(aEnd, bEnd) - Math.max(aStart, bStart);
+      const shortest = Math.min(aEnd - aStart, bEnd - bStart);
+      if (overlap < shortest * 0.4) continue;
+
+      const gap =
+        Math.max(aCenter - a.thickness / 2, bCenter - b.thickness / 2) -
+        Math.min(aCenter + a.thickness / 2, bCenter + b.thickness / 2);
+      if (gap <= 0.25) count += 1;
+    }
+  }
+
+  return count;
+}
+
+function buildWallsSvg(plan: {
+  walls: Wall[];
+  worldWidth: number;
+  worldHeight: number;
+}): string {
+  const pad = 2;
+  const width = plan.worldWidth;
+  const height = plan.worldHeight;
+  const lines = plan.walls
+    .map(
+      (wall) =>
+        `<line x1="${wall.x1}" y1="${wall.y1}" x2="${wall.x2}" y2="${wall.y2}" stroke="#f8fafc" stroke-width="${Math.max(wall.thickness, 0.15)}" stroke-linecap="butt"/>`,
+    )
+    .join("");
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(width * 8)}" height="${Math.round(height * 8)}" viewBox="${-pad} ${-pad} ${width + pad * 2} ${height + pad * 2}"><rect x="${-pad}" y="${-pad}" width="${width + pad * 2}" height="${height + pad * 2}" fill="#0b1220"/>${lines}</svg>`;
+}
 
 function buildOverlayPixels(
   rgb: Uint8Array,
@@ -367,7 +413,78 @@ describe.each(SAMPLES)("real ONNX model on %s", (samplePath) => {
       width: Number(result.plan.worldWidth.toFixed(2)),
       height: Number(result.plan.worldHeight.toFixed(2)),
     });
+    console.log("final counts", {
+      walls: result.plan.walls.length,
+      openings: result.plan.openings.length,
+      duplicateWallPairs: countDuplicateWalls(result.plan.walls),
+    });
+    const wallsPath = path.resolve(ROOT, "debug", `v_${base}_walls.png`);
+    await sharp(Buffer.from(buildWallsSvg(result.plan)))
+      .png()
+      .toFile(wallsPath);
+    console.log("walls image ->", path.relative(ROOT, wallsPath));
     console.groupEnd();
+
+    // ---------------------------------------------------------- STEP 8
+    console.group("STEP 8 - validate plan against the colored overlay");
+    const overlayRaw = await sharp(overlayPath)
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const validation = validatePlanOverlay(
+      overlayRaw.data,
+      overlayRaw.info.width,
+      overlayRaw.info.height,
+      result.plan,
+      transform,
+      result.plan.meta,
+    );
+    const validationPath = path.resolve(
+      ROOT,
+      "debug",
+      `v_${base}_validation.png`,
+    );
+    await sharp(Buffer.from(validation.validationImage), {
+      raw: {
+        width: validation.width,
+        height: validation.height,
+        channels: 3,
+      },
+    })
+      .png()
+      .toFile(validationPath);
+
+    console.log("wall coverage", {
+      percent: Number((validation.wallCoverage * 100).toFixed(1)),
+      reference: validation.referenceWallPixels,
+      covered: validation.coveredWallPixels,
+      missing: validation.missingWallPixels,
+    });
+    console.log("wall precision", {
+      percent: Number((validation.wallPrecision * 100).toFixed(1)),
+      raster: validation.rasterWallPixels,
+      phantom: validation.phantomWallPixels,
+    });
+    console.log("missing wall regions");
+    console.table(validation.missingWallRegions);
+    console.log("openings", {
+      doors: {
+        reference: validation.referenceDoorPixels,
+        matched: validation.matchedDoorPixels,
+      },
+      windows: {
+        reference: validation.referenceWindowPixels,
+        matched: validation.matchedWindowPixels,
+      },
+      missing: validation.missingOpenings.length,
+    });
+    console.log("missing openings");
+    console.table(validation.missingOpenings);
+    console.log("validation image ->", path.relative(ROOT, validationPath));
+    console.groupEnd();
+
+    expect(validation.referenceWallPixels).toBeGreaterThan(0);
+    expect(validation.wallCoverage).toBeGreaterThan(0.5);
+    expect(validation.wallPrecision).toBeGreaterThan(0.5);
 
     console.groupEnd();
 

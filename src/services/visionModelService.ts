@@ -21,6 +21,13 @@ export const VISION_MODEL_URL =
   (import.meta.env.VITE_FLOORPLAN_ONNX_MODEL as string | undefined)?.trim() ||
   "/models/floorplan-layout.onnx";
 
+// Post-processing thresholds for the segmentation path.
+const SEGMENTATION_CONFIDENCE_MARGIN = 0.5;
+const MIN_WALL_THICKNESS_FEET = 0.1;
+const MAX_PARALLEL_WALL_GAP_FEET = 1.5;
+const MIN_PARALLEL_OVERLAP = 0.35;
+const MIN_WALL_COMPONENT_RATIO = 0.00005;
+
 export type VisionModelAvailability = {
   available: boolean;
   url: string;
@@ -88,6 +95,16 @@ export type VisionDebugEvent =
       openings: PixelOpening[];
     }
   | {
+      stage: "sanitize";
+      droppedSegments: number;
+      recoveredSegments: number;
+    }
+  | {
+      stage: "planSanitize";
+      recoveredWalls: number;
+      recoveredOpenings: number;
+    }
+  | {
       stage: "plan";
       wallCount: number;
       openingCount: number;
@@ -99,6 +116,13 @@ export type VisionDebugEvent =
 
 type OrtModule = typeof import("onnxruntime-web");
 type OrtSession = Awaited<ReturnType<OrtModule["InferenceSession"]["create"]>>;
+
+export type PlanMeta = {
+  minX: number;
+  minY: number;
+  margin: number;
+  feetPerPixel: number;
+};
 
 export type ImageTransform = {
   imageWidth: number;
@@ -778,6 +802,299 @@ function maskToSegments(mask: Uint8Array, width: number, height: number) {
   return [...horizontal, ...vertical];
 }
 
+function drawLineMask(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  thickness: number,
+) {
+  const radius = Math.max(0.75, thickness / 2);
+  const radiusSq = radius * radius;
+  const steps = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1)));
+
+  for (let step = 0; step <= steps; step += 1) {
+    const t = step / steps;
+    const cx = x1 + (x2 - x1) * t;
+    const cy = y1 + (y2 - y1) * t;
+    const minX = Math.max(0, Math.floor(cx - radius));
+    const maxX = Math.min(width - 1, Math.ceil(cx + radius));
+    const minY = Math.max(0, Math.floor(cy - radius));
+    const maxY = Math.min(height - 1, Math.ceil(cy + radius));
+
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        if ((x - cx) ** 2 + (y - cy) ** 2 <= radiusSq) {
+          mask[y * width + x] = 1;
+        }
+      }
+    }
+  }
+}
+
+function drawModelSegment(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  segment: PixelSegment,
+  thickness: number,
+) {
+  const x1 = segment.orientation === "h" ? segment.start : segment.center;
+  const y1 = segment.orientation === "h" ? segment.center : segment.start;
+  const x2 = segment.orientation === "h" ? segment.end : segment.center;
+  const y2 = segment.orientation === "h" ? segment.center : segment.end;
+  drawLineMask(mask, width, height, x1, y1, x2, y2, thickness);
+}
+
+function pointNearMask(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  radius: number,
+) {
+  const minX = Math.max(0, x - radius);
+  const maxX = Math.min(width - 1, x + radius);
+  const minY = Math.max(0, y - radius);
+  const maxY = Math.min(height - 1, y + radius);
+
+  for (let py = minY; py <= maxY; py += 1) {
+    for (let px = minX; px <= maxX; px += 1) {
+      if (mask[py * width + px]) return true;
+    }
+  }
+
+  return false;
+}
+
+function segmentSupport(
+  segment: PixelSegment,
+  reference: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  const length = segment.end - segment.start;
+  const samples = Math.max(2, Math.ceil(length));
+  let hits = 0;
+
+  for (let sample = 0; sample <= samples; sample += 1) {
+    const t = sample / samples;
+    const x =
+      segment.orientation === "h"
+        ? segment.start + length * t
+        : segment.center;
+    const y =
+      segment.orientation === "h"
+        ? segment.center
+        : segment.start + length * t;
+    if (
+      pointNearMask(
+        reference,
+        width,
+        height,
+        Math.round(x),
+        Math.round(y),
+        radius,
+      )
+    ) {
+      hits += 1;
+    }
+  }
+
+  return hits / (samples + 1);
+}
+
+function imageSegmentToModel(
+  segment: PixelSegment,
+  transform: ImageTransform,
+): PixelSegment {
+  if (segment.orientation === "h") {
+    return {
+      orientation: "h",
+      start: segment.start * transform.scale + transform.padX,
+      end: segment.end * transform.scale + transform.padX,
+      center: segment.center * transform.scale + transform.padY,
+      thickness: segment.thickness * transform.scale,
+    };
+  }
+
+  return {
+    orientation: "v",
+    start: segment.start * transform.scale + transform.padY,
+    end: segment.end * transform.scale + transform.padY,
+    center: segment.center * transform.scale + transform.padX,
+    thickness: segment.thickness * transform.scale,
+  };
+}
+
+function modelSegmentToImage(
+  segment: PixelSegment,
+  transform: ImageTransform,
+): PixelSegment {
+  if (segment.orientation === "h") {
+    return {
+      orientation: "h",
+      start: (segment.start - transform.padX) / transform.scale,
+      end: (segment.end - transform.padX) / transform.scale,
+      center: (segment.center - transform.padY) / transform.scale,
+      thickness: segment.thickness / transform.scale,
+    };
+  }
+
+  return {
+    orientation: "v",
+    start: (segment.start - transform.padY) / transform.scale,
+    end: (segment.end - transform.padY) / transform.scale,
+    center: (segment.center - transform.padX) / transform.scale,
+    thickness: segment.thickness / transform.scale,
+  };
+}
+
+function collectMaskComponents(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  minArea: number,
+) {
+  const visited = new Uint8Array(mask.length);
+  const queue = new Int32Array(mask.length);
+  const components: Uint8Array[] = [];
+
+  for (let start = 0; start < mask.length; start += 1) {
+    if (!mask[start] || visited[start]) continue;
+
+    let head = 0;
+    let tail = 0;
+    queue[tail] = start;
+    tail += 1;
+    visited[start] = 1;
+    let minX = width;
+    let maxX = -1;
+    let minY = height;
+    let maxY = -1;
+
+    while (head < tail) {
+      const current = queue[head];
+      head += 1;
+      const x = current % width;
+      const y = Math.floor(current / width);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const neighbor = ny * width + nx;
+          if (!mask[neighbor] || visited[neighbor]) continue;
+          visited[neighbor] = 1;
+          queue[tail] = neighbor;
+          tail += 1;
+        }
+      }
+    }
+
+    if (tail < minArea) continue;
+    if (maxX - minX < 2 || maxY - minY < 2) continue;
+
+    const component = new Uint8Array(mask.length);
+    for (let index = 0; index < tail; index += 1) {
+      component[queue[index]] = 1;
+    }
+    components.push(component);
+  }
+
+  return components;
+}
+
+export type SegmentSanitizeResult = {
+  segments: PixelSegment[];
+  droppedSegments: number;
+  recoveredSegments: number;
+};
+
+/**
+ * Uses the wall/opening class masks (the same data the colored overlay shows)
+ * to remove unsupported segments and recover wall runs the post-processing
+ * dropped.
+ */
+export function sanitizeSegmentsWithMasks(
+  segments: PixelSegment[],
+  referenceWalls: Uint8Array,
+  referenceOpenings: Uint8Array,
+  width: number,
+  height: number,
+  transform: ImageTransform,
+): SegmentSanitizeResult {
+  const plane = width * height;
+  const referenceCombined = new Uint8Array(plane);
+  for (let index = 0; index < plane; index += 1) {
+    referenceCombined[index] =
+      referenceWalls[index] || referenceOpenings[index] ? 1 : 0;
+  }
+
+  const modelSegments = segments.map((segment) =>
+    imageSegmentToModel(segment, transform),
+  );
+
+  const kept: PixelSegment[] = [];
+  let droppedSegments = 0;
+  for (const segment of modelSegments) {
+    const support = segmentSupport(
+      segment,
+      referenceCombined,
+      width,
+      height,
+      3,
+    );
+    if (support < 0.3) {
+      droppedSegments += 1;
+      continue;
+    }
+    kept.push(segment);
+  }
+
+  const planCenterline = new Uint8Array(plane);
+  for (const segment of kept) {
+    drawModelSegment(planCenterline, width, height, segment, 1.5);
+  }
+
+  const missing = new Uint8Array(plane);
+  for (let index = 0; index < plane; index += 1) {
+    if (!referenceWalls[index]) continue;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    if (!pointNearMask(planCenterline, width, height, x, y, 14)) {
+      missing[index] = 1;
+    }
+  }
+
+  const recovered: PixelSegment[] = [];
+  for (const component of collectMaskComponents(missing, width, height, 40)) {
+    for (const segment of maskToSegments(component, width, height)) {
+      if (segment.end - segment.start < 8) continue;
+      recovered.push(segment);
+    }
+  }
+
+  return {
+    segments: [...kept, ...recovered].map((segment) =>
+      modelSegmentToImage(segment, transform),
+    ),
+    droppedSegments,
+    recoveredSegments: recovered.length,
+  };
+}
+
 function mergePixelSegments(segments: PixelSegment[]) {
   const sorted = [...segments].sort(
     (a, b) =>
@@ -819,6 +1136,111 @@ function mergePixelSegments(segments: PixelSegment[]) {
   }
 
   return merged;
+}
+
+/**
+ * Removes duplicate parallel bands produced by hollow/double-line wall masks
+ * and drops thin slivers that sit inside a thicker wall band.
+ */
+export function dedupeParallelSegments(
+  segments: PixelSegment[],
+  feetPerPixel: number,
+): PixelSegment[] {
+  const maxGapPx = MAX_PARALLEL_WALL_GAP_FEET / Math.max(feetPerPixel, 1e-6);
+  let result = segments.map((segment) => ({ ...segment }));
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+
+    // 1) A thin band inside a thicker parallel band is an edge artifact.
+    for (let index = 0; index < result.length && !changed; index += 1) {
+      const a = result[index];
+      for (let other = 0; other < result.length; other += 1) {
+        if (other === index) continue;
+        const b = result[other];
+        if (a.orientation !== b.orientation) continue;
+
+        const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start);
+        const shortest = Math.min(a.end - a.start, b.end - b.start);
+        if (overlap < shortest * MIN_PARALLEL_OVERLAP) continue;
+
+        const aLow = a.center - a.thickness / 2;
+        const aHigh = a.center + a.thickness / 2;
+        const bLow = b.center - b.thickness / 2;
+        const bHigh = b.center + b.thickness / 2;
+
+        if (
+          a.thickness < b.thickness * 0.5 &&
+          aLow >= bLow - 0.5 &&
+          aHigh <= bHigh + 0.5
+        ) {
+          result.splice(index, 1);
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (changed) continue;
+
+    // 2) Merge two parallel bands separated by a small hollow gap.
+    for (let index = 0; index < result.length && !changed; index += 1) {
+      const a = result[index];
+      for (let other = index + 1; other < result.length; other += 1) {
+        const b = result[other];
+        if (a.orientation !== b.orientation) continue;
+
+        const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start);
+        const shortest = Math.min(a.end - a.start, b.end - b.start);
+        if (overlap < shortest * MIN_PARALLEL_OVERLAP) continue;
+
+        const aLow = a.center - a.thickness / 2;
+        const aHigh = a.center + a.thickness / 2;
+        const bLow = b.center - b.thickness / 2;
+        const bHigh = b.center + b.thickness / 2;
+        const gap = Math.max(aLow, bLow) - Math.min(aHigh, bHigh);
+        if (gap <= 0 || gap > maxGapPx) continue;
+
+        const low = Math.min(aLow, bLow);
+        const high = Math.max(aHigh, bHigh);
+        result = result.filter((_, idx) => idx !== index && idx !== other);
+        result.push({
+          orientation: a.orientation,
+          start: Math.min(a.start, b.start),
+          end: Math.max(a.end, b.end),
+          center: (low + high) / 2,
+          thickness: high - low,
+        });
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  // 3) Drop short perpendicular pieces that sit inside a wall.
+  return result.filter((segment) => {
+    const length = segment.end - segment.start;
+    for (const other of result) {
+      if (other === segment || other.orientation === segment.orientation) {
+        continue;
+      }
+      const alongOverlap =
+        Math.min(segment.end, other.end) - Math.max(segment.start, other.start);
+      if (alongOverlap <= 0) continue;
+
+      const otherLow = other.center - other.thickness / 2;
+      const otherHigh = other.center + other.thickness / 2;
+      if (segment.center < otherLow || segment.center > otherHigh) continue;
+
+      if (
+        length < (other.end - other.start) * 0.5 &&
+        length <= other.thickness * 2 + 4
+      ) {
+        return false;
+      }
+    }
+    return true;
+  });
 }
 
 function componentBoxes(
@@ -937,6 +1359,7 @@ export function segmentationToMasks(
   channels: number,
   width: number,
   height: number,
+  margin = SEGMENTATION_CONFIDENCE_MARGIN,
 ) {
   const plane = width * height;
   const stats = tensorStats(data);
@@ -958,14 +1381,19 @@ export function segmentationToMasks(
   for (let index = 0; index < plane; index += 1) {
     let bestChannel = 0;
     let bestValue = Number.NEGATIVE_INFINITY;
+    let secondValue = Number.NEGATIVE_INFINITY;
     for (let channel = 0; channel < channels; channel += 1) {
       const value = readTensorValue(data, channel * plane + index);
       if (value > bestValue) {
+        secondValue = bestValue;
         bestValue = value;
         bestChannel = channel;
+      } else if (value > secondValue) {
+        secondValue = value;
       }
     }
-    pixels[index] = bestChannel;
+    // Ignore ambiguous pixels where the winning class is not clearly ahead.
+    pixels[index] = bestValue - secondValue >= margin ? bestChannel : 0;
   }
 
   for (let channel = 0; channel < channels; channel += 1) {
@@ -995,6 +1423,53 @@ export function segClassRole(
   return null;
 }
 
+function removeSmallMaskComponents(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  minArea: number,
+) {
+  const visited = new Uint8Array(mask.length);
+  const queue = new Int32Array(mask.length);
+
+  for (let start = 0; start < mask.length; start += 1) {
+    if (!mask[start] || visited[start]) continue;
+
+    let head = 0;
+    let tail = 0;
+    queue[tail] = start;
+    tail += 1;
+    visited[start] = 1;
+
+    while (head < tail) {
+      const current = queue[head];
+      head += 1;
+      const x = current % width;
+      const y = Math.floor(current / width);
+
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const neighbor = ny * width + nx;
+          if (!mask[neighbor] || visited[neighbor]) continue;
+          visited[neighbor] = 1;
+          queue[tail] = neighbor;
+          tail += 1;
+        }
+      }
+    }
+
+    if (tail < minArea) {
+      for (let index = 0; index < tail; index += 1) {
+        mask[queue[index]] = 0;
+      }
+    }
+  }
+}
+
 export function segmentationPlan(
   masks: Uint8Array[],
   channels: number,
@@ -1012,6 +1487,12 @@ export function segmentationPlan(
     if (!role) continue;
 
     if (role === "wall") {
+      removeSmallMaskComponents(
+        masks[channel],
+        width,
+        height,
+        Math.max(8, Math.round(width * height * MIN_WALL_COMPONENT_RATIO)),
+      );
       segments.push(...maskToSegments(masks[channel], width, height));
       continue;
     }
@@ -1052,6 +1533,45 @@ export function segmentationPlan(
   return { segments, openings };
 }
 
+function distanceWallToBox(
+  wall: Wall,
+  boxMinX: number,
+  boxMinY: number,
+  boxMaxX: number,
+  boxMaxY: number,
+  centerX: number,
+  centerY: number,
+) {
+  const horizontal = Math.abs(wall.y1 - wall.y2) < 1e-6;
+  const vertical = Math.abs(wall.x1 - wall.x2) < 1e-6;
+
+  if (!horizontal && !vertical) {
+    return distanceToSegment({ x: centerX, y: centerY }, wall);
+  }
+
+  if (horizontal) {
+    const x1 = Math.min(wall.x1, wall.x2);
+    const x2 = Math.max(wall.x1, wall.x2);
+    const perpendicular = Math.max(
+      0,
+      boxMinY - wall.y1,
+      wall.y1 - boxMaxY,
+    );
+    const along = Math.max(0, x1 - boxMaxX, boxMinX - x2);
+    return Math.hypot(perpendicular, along);
+  }
+
+  const y1 = Math.min(wall.y1, wall.y2);
+  const y2 = Math.max(wall.y1, wall.y2);
+  const perpendicular = Math.max(
+    0,
+    boxMinX - wall.x1,
+    wall.x1 - boxMaxX,
+  );
+  const along = Math.max(0, y1 - boxMaxY, boxMinY - y2);
+  return Math.hypot(perpendicular, along);
+}
+
 function assignOpenings(
   walls: Wall[],
   pixelOpenings: PixelOpening[],
@@ -1069,12 +1589,24 @@ function assignOpenings(
       ((opening.minX + opening.maxX) / 2 - offsetX) * feetPerPixel + margin;
     const centerY =
       ((opening.minY + opening.maxY) / 2 - offsetY) * feetPerPixel + margin;
+    const boxMinX = (opening.minX - offsetX) * feetPerPixel + margin;
+    const boxMaxX = (opening.maxX - offsetX) * feetPerPixel + margin;
+    const boxMinY = (opening.minY - offsetY) * feetPerPixel + margin;
+    const boxMaxY = (opening.maxY - offsetY) * feetPerPixel + margin;
 
     let bestWall: Wall | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
 
     for (const wall of walls) {
-      const distance = distanceToSegment({ x: centerX, y: centerY }, wall);
+      const distance = distanceWallToBox(
+        wall,
+        boxMinX,
+        boxMinY,
+        boxMaxX,
+        boxMaxY,
+        centerX,
+        centerY,
+      );
       const threshold = wall.thickness / 2 + Math.max(1.5, 3);
       if (distance <= threshold && distance < bestDistance) {
         bestWall = wall;
@@ -1177,16 +1709,6 @@ function bridgeOpenings(
       };
       result = result.filter((segment) => segment !== left && segment !== right);
       result.push(merged);
-      continue;
-    }
-
-    const only = left ?? right;
-    if (!only) continue;
-
-    if (only.end <= main + span * 0.5) {
-      only.end = Math.max(only.end, main + span * 0.5 + 1);
-    } else {
-      only.start = Math.min(only.start, main - span * 0.5 - 1);
     }
   }
 
@@ -1198,11 +1720,16 @@ export function buildPlanFromSegments(
   pixelOpenings: PixelOpening[],
   feetPerPixel: number,
 ) {
-  const merged = bridgeOpenings(mergePixelSegments(rawSegments), pixelOpenings);
+  const cleaned = dedupeParallelSegments(rawSegments, feetPerPixel);
+  const merged = dedupeParallelSegments(
+    bridgeOpenings(mergePixelSegments(cleaned), pixelOpenings),
+    feetPerPixel,
+  );
   const segments = merged.filter(
     (segment) =>
       (segment.end - segment.start) * feetPerPixel >= 0.75 &&
-      segment.thickness * feetPerPixel <= 8,
+      segment.thickness * feetPerPixel <= 8 &&
+      segment.thickness * feetPerPixel >= MIN_WALL_THICKNESS_FEET,
   );
 
   if (segments.length === 0) {
@@ -1274,13 +1801,235 @@ export function buildPlanFromSegments(
     openings,
     worldWidth: (maxX - minX) * feetPerPixel + margin * 2,
     worldHeight: (maxY - minY) * feetPerPixel + margin * 2,
+    meta: { minX, minY, margin, feetPerPixel },
+  };
+}
+
+function feetToModelPoint(
+  x: number,
+  y: number,
+  transform: ImageTransform,
+  meta: PlanMeta,
+) {
+  const imageX = (x - meta.margin) / meta.feetPerPixel + meta.minX;
+  const imageY = (y - meta.margin) / meta.feetPerPixel + meta.minY;
+  return {
+    x: imageX * transform.scale + transform.padX,
+    y: imageY * transform.scale + transform.padY,
+  };
+}
+
+function modelPointToFeet(
+  x: number,
+  y: number,
+  transform: ImageTransform,
+  meta: PlanMeta,
+) {
+  const imageX = (x - transform.padX) / transform.scale;
+  const imageY = (y - transform.padY) / transform.scale;
+  return {
+    x: (imageX - meta.minX) * meta.feetPerPixel + meta.margin,
+    y: (imageY - meta.minY) * meta.feetPerPixel + meta.margin,
+  };
+}
+
+function wallOrientation(wall: Wall): Orientation | null {
+  if (Math.abs(wall.y1 - wall.y2) < 1e-6) return "h";
+  if (Math.abs(wall.x1 - wall.x2) < 1e-6) return "v";
+  return null;
+}
+
+function wallAlreadyCovered(candidate: Wall, walls: Wall[]) {
+  const orientation = wallOrientation(candidate);
+  if (!orientation) return false;
+
+  const [candidateStart, candidateEnd, candidateCenter] =
+    orientation === "h"
+      ? [candidate.x1, candidate.x2, candidate.y1]
+      : [candidate.y1, candidate.y2, candidate.x1];
+
+  for (const wall of walls) {
+    if (wallOrientation(wall) !== orientation) continue;
+    const [start, end, center] =
+      orientation === "h"
+        ? [wall.x1, wall.x2, wall.y1]
+        : [wall.y1, wall.y2, wall.x1];
+
+    const overlap =
+      Math.min(candidateEnd, end) - Math.max(candidateStart, start);
+    const shortest = Math.min(
+      candidateEnd - candidateStart,
+      end - start,
+    );
+    if (overlap < shortest * 0.5) continue;
+
+    if (
+      Math.abs(candidateCenter - center) <=
+      Math.max(1.5, (wall.thickness + candidate.thickness) / 2 + 0.5)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Reconciles the final plan with the raw class masks (the colored overlay's
+ * source): adds missing wall runs and re-assigns openings against the cleaned
+ * wall set.
+ */
+export function sanitizePlanWithMasks(
+  plan: ReturnType<typeof buildPlanFromSegments>,
+  referenceMasks: Uint8Array[],
+  channels: number,
+  width: number,
+  height: number,
+  transform: ImageTransform,
+) {
+  const meta = plan.meta;
+  const plane = width * height;
+  const wallMask = new Uint8Array(plane);
+  const doorMask = new Uint8Array(plane);
+  const windowMask = new Uint8Array(plane);
+
+  for (let channel = 0; channel < channels; channel += 1) {
+    const role = segClassRole(channel, channels);
+    if (!role) continue;
+    const target =
+      role === "wall" ? wallMask : role === "door" ? doorMask : windowMask;
+    const mask = referenceMasks[channel];
+    for (let index = 0; index < plane; index += 1) {
+      if (mask[index]) target[index] = 1;
+    }
+  }
+
+  const planCenterline = new Uint8Array(plane);
+  for (const wall of plan.walls) {
+    const a = feetToModelPoint(wall.x1, wall.y1, transform, meta);
+    const b = feetToModelPoint(wall.x2, wall.y2, transform, meta);
+    drawLineMask(planCenterline, width, height, a.x, a.y, b.x, b.y, 1.5);
+  }
+
+  const missing = new Uint8Array(plane);
+  for (let index = 0; index < plane; index += 1) {
+    if (!wallMask[index]) continue;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    if (!pointNearMask(planCenterline, width, height, x, y, 14)) {
+      missing[index] = 1;
+    }
+  }
+
+  const walls = [...plan.walls];
+  const timestamp = Date.now();
+  let recoveredWalls = 0;
+
+  for (const component of collectMaskComponents(missing, width, height, 40)) {
+    for (const segment of maskToSegments(component, width, height)) {
+      const lengthFeet =
+        ((segment.end - segment.start) / transform.scale) * meta.feetPerPixel;
+      const thicknessFeet =
+        (segment.thickness / transform.scale) * meta.feetPerPixel;
+      if (
+        lengthFeet < 0.75 ||
+        thicknessFeet < MIN_WALL_THICKNESS_FEET ||
+        thicknessFeet > 8
+      ) {
+        continue;
+      }
+
+      const a =
+        segment.orientation === "h"
+          ? modelPointToFeet(
+              segment.start,
+              segment.center,
+              transform,
+              meta,
+            )
+          : modelPointToFeet(
+              segment.center,
+              segment.start,
+              transform,
+              meta,
+            );
+      const b =
+        segment.orientation === "h"
+          ? modelPointToFeet(segment.end, segment.center, transform, meta)
+          : modelPointToFeet(segment.center, segment.end, transform, meta);
+
+      const candidate: Wall = {
+        id: `vision-recovered-${timestamp}-${recoveredWalls}`,
+        x1: a.x,
+        y1: a.y,
+        x2: b.x,
+        y2: b.y,
+        thickness: clamp(thicknessFeet, 0.25, 0.75),
+        height: DEFAULTS.wallHeight,
+      };
+
+      if (wallAlreadyCovered(candidate, walls)) continue;
+      walls.push(candidate);
+      recoveredWalls += 1;
+    }
+  }
+
+  const pixelOpenings: PixelOpening[] = [];
+  const minArea = Math.max(24, Math.round(width * height * 0.00015));
+  for (let channel = 0; channel < channels; channel += 1) {
+    const role = segClassRole(channel, channels);
+    if (role !== "door" && role !== "window") continue;
+    const mask = role === "door" ? doorMask : windowMask;
+    for (const component of componentBoxes(
+      mask,
+      width,
+      height,
+      minArea,
+      0.75,
+    )) {
+      pixelOpenings.push({
+        ...component,
+        type: role,
+        minX: modelToImageX(component.minX, transform),
+        maxX: modelToImageX(component.maxX, transform),
+        minY: modelToImageY(component.minY, transform),
+        maxY: modelToImageY(component.maxY, transform),
+      });
+    }
+  }
+
+  const openings = assignOpenings(
+    walls,
+    pixelOpenings,
+    meta.feetPerPixel,
+    meta.minX,
+    meta.minY,
+    meta.margin,
+  );
+
+  let maxWallX = 0;
+  let maxWallY = 0;
+  for (const wall of walls) {
+    maxWallX = Math.max(maxWallX, wall.x1, wall.x2);
+    maxWallY = Math.max(maxWallY, wall.y1, wall.y2);
+  }
+
+  return {
+    ...plan,
+    walls,
+    openings,
+    worldWidth: Math.max(plan.worldWidth, maxWallX + meta.margin),
+    worldHeight: Math.max(plan.worldHeight, maxWallY + meta.margin),
+    recoveredWalls,
   };
 }
 
 export type ProcessedVisionOutputs = {
   segments: PixelSegment[];
   openings: PixelOpening[];
-  plan: ReturnType<typeof buildPlanFromSegments>;
+  plan: ReturnType<typeof buildPlanFromSegments> & {
+    recoveredWalls?: number;
+  };
   usedSegmentation: boolean;
 };
 
@@ -1301,6 +2050,10 @@ export function processVisionOutputs(
   let segments: PixelSegment[] = [];
   let pixelOpenings: PixelOpening[] = [];
   let usedSegmentation = false;
+  let referenceMasks: Uint8Array[] | null = null;
+  let referenceChannels = 0;
+  let referenceWidth = 0;
+  let referenceHeight = 0;
 
   for (const [outputName, output] of Object.entries(outputs)) {
     emitDebug(options?.debug, {
@@ -1356,7 +2109,48 @@ export function processVisionOutputs(
         transform,
         options?.signal,
       );
-      segments = converted.segments;
+      // Reference classes come from the raw argmax (the same map the colored
+      // overlay shows); the confidence-filtered masks are only used to build
+      // the initial segments.
+      const rawMasks = segmentationToMasks(
+        segmentation.data,
+        segmentation.channels,
+        segmentation.width,
+        segmentation.height,
+        0,
+      );
+      referenceMasks = rawMasks;
+      referenceChannels = segmentation.channels;
+      referenceWidth = segmentation.width;
+      referenceHeight = segmentation.height;
+      const plane = segmentation.width * segmentation.height;
+      const wallMask = new Uint8Array(plane);
+      const openingMask = new Uint8Array(plane);
+      for (let channel = 0; channel < segmentation.channels; channel += 1) {
+        const role = segClassRole(channel, segmentation.channels);
+        if (!role) continue;
+        const target = role === "wall" ? wallMask : openingMask;
+        const mask = rawMasks[channel];
+        for (let index = 0; index < plane; index += 1) {
+          if (mask[index]) target[index] = 1;
+        }
+      }
+
+      const sanitized = sanitizeSegmentsWithMasks(
+        converted.segments,
+        wallMask,
+        openingMask,
+        segmentation.width,
+        segmentation.height,
+        transform,
+      );
+      emitDebug(options?.debug, {
+        stage: "sanitize",
+        droppedSegments: sanitized.droppedSegments,
+        recoveredSegments: sanitized.recoveredSegments,
+      });
+
+      segments = sanitized.segments;
       pixelOpenings = converted.openings;
       usedSegmentation = true;
       emitDebug(options?.debug, {
@@ -1378,7 +2172,27 @@ export function processVisionOutputs(
     );
   }
 
-  const plan = buildPlanFromSegments(segments, pixelOpenings, feetPerPixel);
+  let plan: ReturnType<typeof buildPlanFromSegments> & {
+    recoveredWalls?: number;
+  } = buildPlanFromSegments(segments, pixelOpenings, feetPerPixel);
+
+  if (usedSegmentation && referenceMasks) {
+    const beforeOpenings = plan.openings.length;
+    plan = sanitizePlanWithMasks(
+      plan,
+      referenceMasks,
+      referenceChannels,
+      referenceWidth,
+      referenceHeight,
+      transform,
+    );
+    emitDebug(options?.debug, {
+      stage: "planSanitize",
+      recoveredWalls: plan.recoveredWalls ?? 0,
+      recoveredOpenings: plan.openings.length - beforeOpenings,
+    });
+  }
+
   emitDebug(options?.debug, {
     stage: "plan",
     wallCount: plan.walls.length,

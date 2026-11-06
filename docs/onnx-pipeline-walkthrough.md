@@ -213,6 +213,50 @@ The overall 2D floor-plan bounding box in feet (plus a 0.5 ft margin). The 3D vi
 
 ---
 
+## STEP 8 — Validation against the colored overlay
+
+`src/services/planOverlayValidation.ts` compares the final plan with the colored overlay, which is the model's class map rendered as colors. It answers: *did the vectorization keep the walls and openings the model saw?*
+
+How it works:
+
+1. Decode the overlay back into classes: blue = wall, green = door, orange = window.
+2. Rasterize the final plan walls/openings back into the 640×640 model space.
+3. Measure the distance from every reference wall pixel to the nearest plan wall centerline.
+   - within tolerance → covered
+   - beyond tolerance → **missing wall**
+4. Plan wall pixels far from any reference wall/door/window → **phantom wall**.
+5. Reference door/window components with less than 35% coverage by plan openings → **missing opening**.
+
+Output image: `debug/v_planNN_validation.png`
+
+| Color | Meaning |
+| --- | --- |
+| green | wall covered by the plan |
+| red | missing wall pixels |
+| orange | phantom wall pixels |
+| blue | matched window |
+| magenta | missing door/window |
+
+The console report includes wall coverage, wall precision, missing wall regions (model + original-image bounding boxes), and missing openings.
+
+The same class masks are also used to sanitize the plan before it is returned:
+
+- wall runs that the mask shows but the vectorizer dropped are recovered and added
+- openings are re-assigned against the cleaned wall set, so doors/windows that lost their supporting wall are restored
+- walls not supported by the class map are dropped
+
+Real results from the sample plans after sanitization:
+
+| | plan01 | plan02 |
+| --- | --- | --- |
+| wall coverage | 99.9% | 99.0% |
+| wall precision | 100% | 99% |
+| missing openings | 0 | 2 doors |
+
+Tuning options are passed to `validatePlanOverlay`: `wallTolerance` (default `14`), `openingTolerance` (default `6`), `phantomTolerance` (default `5`), and `minComponentPixels` (default `20`).
+
+---
+
 ## Mental model of the whole run
 
 1. **Image → tensor** — resize into 640×640 numbers.
@@ -222,8 +266,9 @@ The overall 2D floor-plan bounding box in feet (plus a 0.5 ft margin). The 3D vi
 5. **Scores → masks** — argmax makes binary wall/door/window masks.
 6. **Masks → vectors** — thin wall masks become line segments; blobs become opening boxes.
 7. **Vectors → plan** — convert to feet, snap openings to walls, build the final `Wall` / `Opening` data.
+8. **Reconcile → sanitize** — use the raw class masks (the colored overlay's source) to recover missing wall runs, re-assign openings, and validate coverage.
 
-The 3D view then extrudes the STEP 7 walls (height 8 ft) and cuts door/window holes using the assigned openings.
+The 3D view then extrudes the cleaned walls (height 8 ft) and cuts door/window holes using the assigned openings.
 
 ---
 
