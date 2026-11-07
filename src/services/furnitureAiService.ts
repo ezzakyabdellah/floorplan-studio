@@ -1,4 +1,5 @@
 import type { Furniture, FurnitureKind, Opening, Wall } from "../types/floorplan";
+import { furnitureCatalogItem } from "../data/furnitureCatalog";
 import { pointAtDistance, wallLength } from "../utils/geometry";
 import {
   DEFAULT_AI_MODELS,
@@ -37,19 +38,6 @@ const FURNITURE_KINDS: FurnitureKind[] = [
   "dining-table",
   "chair",
 ];
-
-const FURNITURE_SIZE_RATIOS: Record<FurnitureKind, [number, number, number]> = {
-  bed: [0.43, 0.54, 0.9],
-  nightstand: [0.12, 0.12, 1.8],
-  wardrobe: [0.3, 0.12, 6.2],
-  sofa: [0.5, 0.22, 2.8],
-  "coffee-table": [0.25, 0.14, 1.35],
-  "media-console": [0.4, 0.1, 2.2],
-  desk: [0.44, 0.2, 2.5],
-  "desk-chair": [0.17, 0.17, 2.7],
-  "dining-table": [0.42, 0.32, 2.5],
-  chair: [0.14, 0.14, 2.8],
-};
 
 type RawFurniture = {
   roomId?: unknown;
@@ -196,7 +184,7 @@ export async function suggestFurnitureWithLocalAI(
     if (!room || !numbers.every((value) => typeof value === "number" && Number.isFinite(value))) {
       return [];
     }
-    const [widthRatio, depthRatio, height] = FURNITURE_SIZE_RATIOS[item.kind as FurnitureKind];
+    const { width, depth, height } = furnitureCatalogItem(item.kind as FurnitureKind);
 
     return [{
       id: `local-ai-${item.roomId}-${index}`,
@@ -206,8 +194,8 @@ export async function suggestFurnitureWithLocalAI(
       roomLabel: room.label,
       x: item.x as number,
       y: item.y as number,
-      width: Math.max(0.65, (room.maxX - room.minX) * widthRatio),
-      depth: Math.max(0.65, (room.maxY - room.minY) * depthRatio),
+      width,
+      depth,
       height,
       rotation: ((item.rotationDeg as number) * Math.PI) / 180,
       confidence:

@@ -4,11 +4,13 @@ import {
   type ActiveTool,
   type ActiveView,
   type Furniture,
+  type FurnitureKind,
   type Opening,
   type OpeningType,
   type SceneFile,
   type Wall,
 } from "../types/floorplan";
+import { furnitureCatalogItem } from "../data/furnitureCatalog";
 
 const createId = () => {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -83,6 +85,8 @@ type FloorPlanState = {
   activeTool: ActiveTool;
   selectedWallId: string | null;
   selectedOpeningId: string | null;
+  selectedFurnitureId: string | null;
+  isFurnitureDragging: boolean;
   complianceOpen: boolean;
   aiOpen: boolean;
   sceneName: string;
@@ -95,6 +99,8 @@ type FloorPlanState = {
   setAiOpen: (open: boolean) => void;
   selectWall: (id: string | null) => void;
   selectOpening: (id: string | null) => void;
+  selectFurniture: (id: string | null) => void;
+  setFurnitureDragging: (dragging: boolean) => void;
   clearSelection: () => void;
   addWall: (
     x1: number,
@@ -114,6 +120,9 @@ type FloorPlanState = {
   updateOpening: (id: string, patch: Partial<Omit<Opening, "id">>) => void;
   deleteOpening: (id: string) => void;
   setFurniture: (furniture: Furniture[]) => void;
+  addFurniture: (kind: FurnitureKind, x: number, y: number) => string;
+  updateFurniture: (id: string, patch: Partial<Omit<Furniture, "id">>) => void;
+  deleteFurniture: (id: string) => void;
   importPlan: (
     walls: Wall[],
     openings: Opening[],
@@ -133,6 +142,8 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
   activeTool: "select",
   selectedWallId: null,
   selectedOpeningId: null,
+  selectedFurnitureId: null,
+  isFurnitureDragging: false,
   complianceOpen: true,
   aiOpen: false,
   sceneName: initialScene.name ?? "Untitled Floor Plan",
@@ -168,11 +179,14 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
     })),
 
   selectWall: (id) =>
-    set({ selectedWallId: id, selectedOpeningId: null }),
+    set({ selectedWallId: id, selectedOpeningId: null, selectedFurnitureId: null }),
   selectOpening: (id) =>
-    set({ selectedOpeningId: id, selectedWallId: null }),
+    set({ selectedOpeningId: id, selectedWallId: null, selectedFurnitureId: null }),
+  selectFurniture: (id) =>
+    set({ selectedFurnitureId: id, selectedWallId: null, selectedOpeningId: null }),
+  setFurnitureDragging: (isFurnitureDragging) => set({ isFurnitureDragging }),
   clearSelection: () =>
-    set({ selectedWallId: null, selectedOpeningId: null }),
+    set({ selectedWallId: null, selectedOpeningId: null, selectedFurnitureId: null }),
 
   addWall: (x1, y1, x2, y2, overrides) => {
     const id = createId();
@@ -189,6 +203,8 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
       walls: [...state.walls, wall],
       selectedWallId: id,
       selectedOpeningId: null,
+      selectedFurnitureId: null,
+      isFurnitureDragging: false,
     }));
     return id;
   },
@@ -253,6 +269,8 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
       openings: [...state.openings, opening],
       selectedOpeningId: id,
       selectedWallId: null,
+      selectedFurnitureId: null,
+      isFurnitureDragging: false,
     }));
     return id;
   },
@@ -271,7 +289,52 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
         state.selectedOpeningId === id ? null : state.selectedOpeningId,
     })),
 
-  setFurniture: (furniture) => set({ furniture }),
+  setFurniture: (furniture) =>
+    set((state) => ({
+      furniture,
+      selectedFurnitureId: furniture.some((item) => item.id === state.selectedFurnitureId)
+        ? state.selectedFurnitureId
+        : null,
+    })),
+
+  addFurniture: (kind, x, y) => {
+    const catalogItem = furnitureCatalogItem(kind);
+    const id = createId();
+    const item: Furniture = {
+      id,
+      roomId: 0,
+      kind,
+      source: "geometry",
+      roomLabel: "Manual placement",
+      x,
+      y,
+      width: catalogItem.width,
+      depth: catalogItem.depth,
+      height: catalogItem.height,
+      rotation: 0,
+      confidence: 1,
+    };
+    set((state) => ({
+      furniture: [...state.furniture, item],
+      selectedFurnitureId: id,
+      selectedWallId: null,
+      selectedOpeningId: null,
+    }));
+    return id;
+  },
+
+  updateFurniture: (id, patch) =>
+    set((state) => ({
+      furniture: state.furniture.map((item) =>
+        item.id === id ? { ...item, ...patch } : item,
+      ),
+    })),
+
+  deleteFurniture: (id) =>
+    set((state) => ({
+      furniture: state.furniture.filter((item) => item.id !== id),
+      selectedFurnitureId: state.selectedFurnitureId === id ? null : state.selectedFurnitureId,
+    })),
 
   importPlan: (walls, openings, options) => {
     const replace = options?.replace ?? true;
@@ -300,6 +363,8 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
       activeTool: "select",
       selectedWallId: null,
       selectedOpeningId: null,
+      selectedFurnitureId: null,
+      isFurnitureDragging: false,
       revision: state.revision + 1,
     }));
 
@@ -317,6 +382,8 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
       sceneName: scene.name ?? "Imported Floor Plan",
       selectedWallId: null,
       selectedOpeningId: null,
+      selectedFurnitureId: null,
+      isFurnitureDragging: false,
       revision: state.revision + 1,
     })),
 
@@ -329,6 +396,8 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
       sceneName: scene.name ?? "Untitled Floor Plan",
       selectedWallId: null,
       selectedOpeningId: null,
+      selectedFurnitureId: null,
+      isFurnitureDragging: false,
       activeTool: "select",
       revision: state.revision + 1,
     }));

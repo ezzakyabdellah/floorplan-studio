@@ -28,9 +28,10 @@ import { LocalAiAssistant } from "../ui/LocalAiAssistant";
 import { useFloorPlanStore } from "../../store/floorPlanStore";
 import type { ActiveTool } from "../../types/floorplan";
 import { buildSceneFile, openSceneFile, saveSceneFile } from "../../utils/fileIO";
-import { wallLength } from "../../utils/geometry";
+import { getSceneBounds, wallLength } from "../../utils/geometry";
 import { runComplianceChecks } from "../../utils/spatialRules";
 import { generateFurnitureLayoutWithAI } from "../../services/furnitureAiService";
+import { FURNITURE_CATALOG } from "../../data/furnitureCatalog";
 import { cn } from "../../utils/cn";
 
 type ToastTone = "info" | "success" | "error";
@@ -150,19 +151,108 @@ function NumberField({
 function Inspector() {
   const walls = useFloorPlanStore((state) => state.walls);
   const openings = useFloorPlanStore((state) => state.openings);
+  const furniture = useFloorPlanStore((state) => state.furniture);
   const selectedWallId = useFloorPlanStore((state) => state.selectedWallId);
   const selectedOpeningId = useFloorPlanStore(
     (state) => state.selectedOpeningId,
   );
+  const selectedFurnitureId = useFloorPlanStore((state) => state.selectedFurnitureId);
   const updateWall = useFloorPlanStore((state) => state.updateWall);
   const updateOpening = useFloorPlanStore((state) => state.updateOpening);
+  const updateFurniture = useFloorPlanStore((state) => state.updateFurniture);
   const deleteWall = useFloorPlanStore((state) => state.deleteWall);
   const deleteOpening = useFloorPlanStore((state) => state.deleteOpening);
+  const deleteFurniture = useFloorPlanStore((state) => state.deleteFurniture);
 
   const selectedWall = walls.find((wall) => wall.id === selectedWallId);
   const selectedOpening = openings.find(
     (opening) => opening.id === selectedOpeningId,
   );
+  const selectedFurniture = furniture.find((item) => item.id === selectedFurnitureId);
+
+  if (selectedFurniture) {
+    const degrees = (selectedFurniture.rotation * 180) / Math.PI;
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+              Selection
+            </p>
+            <p className="mt-0.5 text-[13px] font-semibold text-slate-100">
+              {FURNITURE_CATALOG.find((item) => item.kind === selectedFurniture.kind)?.label ?? "Furniture"}
+            </p>
+          </div>
+          <span className="rounded-full border border-accent/20 bg-accent/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-accent">
+            Low-poly
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <NumberField
+            label="X"
+            value={selectedFurniture.x}
+            unit="ft"
+            step={0.1}
+            onChange={(x) => updateFurniture(selectedFurniture.id, { x })}
+          />
+          <NumberField
+            label="Y"
+            value={selectedFurniture.y}
+            unit="ft"
+            step={0.1}
+            onChange={(y) => updateFurniture(selectedFurniture.id, { y })}
+          />
+          <NumberField
+            label="Width"
+            value={selectedFurniture.width}
+            unit="ft"
+            min={0.2}
+            step={0.1}
+            onChange={(width) => updateFurniture(selectedFurniture.id, { width })}
+          />
+          <NumberField
+            label="Depth"
+            value={selectedFurniture.depth}
+            unit="ft"
+            min={0.2}
+            step={0.1}
+            onChange={(depth) => updateFurniture(selectedFurniture.id, { depth })}
+          />
+          <NumberField
+            label="Height"
+            value={selectedFurniture.height}
+            unit="ft"
+            min={0.2}
+            step={0.1}
+            onChange={(height) => updateFurniture(selectedFurniture.id, { height })}
+          />
+          <NumberField
+            label="Rotation"
+            value={degrees}
+            unit="deg"
+            step={5}
+            onChange={(value) =>
+              updateFurniture(selectedFurniture.id, { rotation: (value * Math.PI) / 180 })
+            }
+          />
+        </div>
+
+        <p className="rounded-lg border border-line/70 bg-black/20 p-2.5 text-[10px] leading-relaxed text-slate-500">
+          Drag the piece on the 2D plan to reposition it. The 3D view updates immediately.
+        </p>
+
+        <button
+          type="button"
+          onClick={() => deleteFurniture(selectedFurniture.id)}
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-rose-500/20 bg-rose-500/[0.06] px-2.5 py-2 text-[11px] font-medium text-rose-300 transition hover:bg-rose-500/[0.12]"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          Delete furniture
+        </button>
+      </div>
+    );
+  }
 
   if (selectedOpening) {
     const wall = walls.find((item) => item.id === selectedOpening.wallId);
@@ -361,6 +451,78 @@ function Inspector() {
   );
 }
 
+function FurnitureLibrary() {
+  const walls = useFloorPlanStore((state) => state.walls);
+  const addFurniture = useFloorPlanStore((state) => state.addFurniture);
+  const setActiveView = useFloorPlanStore((state) => state.setActiveView);
+  const categories = [...new Set(FURNITURE_CATALOG.map((item) => item.category))];
+  const bounds = getSceneBounds(walls);
+
+  const addAtCenter = (kind: (typeof FURNITURE_CATALOG)[number]["kind"]) => {
+    addFurniture(kind, bounds.centerX, bounds.centerY);
+    setActiveView("2d");
+  };
+
+  return (
+    <section className="space-y-2.5">
+      <div className="flex items-center justify-between px-1">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+          Furniture Library
+        </p>
+        <span className="font-mono text-[9px] text-slate-600">
+          {FURNITURE_CATALOG.length} low-poly
+        </span>
+      </div>
+      <p className="px-1 text-[10px] leading-relaxed text-slate-500">
+        Drag a piece onto either canvas, or use + to add it at the plan center.
+      </p>
+      {categories.map((category) => (
+        <div key={category} className="space-y-1">
+          <p className="px-1 pt-1 text-[9px] font-medium uppercase tracking-[0.12em] text-slate-600">
+            {category}
+          </p>
+          {FURNITURE_CATALOG.filter((item) => item.category === category).map((item) => (
+            <div
+              key={item.kind}
+              draggable
+              onDragStart={(event) => {
+                event.dataTransfer.setData("application/x-floorplan-furniture", item.kind);
+                event.dataTransfer.effectAllowed = "copy";
+              }}
+              title={`${item.description} · ${item.width} × ${item.depth} ft`}
+              className="group flex cursor-grab items-center gap-2 rounded-lg border border-transparent px-1.5 py-1.5 transition hover:border-line hover:bg-white/[0.035] active:cursor-grabbing"
+            >
+              <span
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-black/20 shadow-inner"
+                style={{ backgroundColor: item.color }}
+              >
+                <Box className="h-4 w-4 text-slate-900/75" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[11px] font-medium text-slate-300">
+                  {item.label}
+                </span>
+                <span className="block truncate font-mono text-[9px] text-slate-600">
+                  {item.width} × {item.depth} ft
+                </span>
+              </span>
+              <button
+                type="button"
+                aria-label={`Add ${item.label}`}
+                title={`Add ${item.label} at plan center`}
+                onClick={() => addAtCenter(item.kind)}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-line bg-black/20 text-slate-500 transition hover:border-accent/35 hover:bg-accent/10 hover:text-accent"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ))}
+    </section>
+  );
+}
+
 function Sidebar() {
   const activeTool = useFloorPlanStore((state) => state.activeTool);
   const setActiveTool = useFloorPlanStore((state) => state.setActiveTool);
@@ -464,7 +626,9 @@ function Sidebar() {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
+        <FurnitureLibrary />
+        <div className="border-t border-line" />
         <Inspector />
       </div>
     </aside>
@@ -642,7 +806,7 @@ function TopBar({
       <div className="ml-auto flex items-center gap-3">
         <span className="hidden items-center gap-1.5 rounded-full border border-line bg-black/20 px-2.5 py-1 text-[10px] text-slate-500 lg:flex">
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-          {walls.length} walls · {openings.length} openings
+          {walls.length} walls · {openings.length} openings · {furniture.length} furniture
         </span>
         <ViewSwitcher />
       </div>

@@ -3,12 +3,15 @@ import {
   useEffect,
   useRef,
   useState,
+  type DragEvent as ReactDragEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Maximize, ZoomIn, ZoomOut } from "lucide-react";
 import { useFloorPlanStore } from "../../store/floorPlanStore";
 import {
   DEFAULTS,
+  type Furniture,
+  type FurnitureKind,
   type Opening,
   type Vec2,
   type Wall,
@@ -26,6 +29,7 @@ import {
   wallLength,
 } from "../../utils/geometry";
 import { cn } from "../../utils/cn";
+import { FURNITURE_CATALOG, furnitureCatalogItem } from "../../data/furnitureCatalog";
 
 type View = {
   scale: number;
@@ -40,11 +44,22 @@ type PanState = {
   startView: View;
 };
 
+type FurnitureDragState = {
+  id: string;
+  pointerId: number;
+  offsetX: number;
+  offsetY: number;
+};
+
 const MIN_SCALE = 2;
 const MAX_SCALE = 240;
 
 const clampScale = (scale: number) =>
   Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale));
+
+function isFurnitureKind(value: string): value is FurnitureKind {
+  return FURNITURE_CATALOG.some((item) => item.kind === value);
+}
 
 function roundedRect(
   ctx: CanvasRenderingContext2D,
@@ -67,24 +82,32 @@ function roundedRect(
 export function Canvas2D() {
   const walls = useFloorPlanStore((state) => state.walls);
   const openings = useFloorPlanStore((state) => state.openings);
+  const furniture = useFloorPlanStore((state) => state.furniture);
   const activeTool = useFloorPlanStore((state) => state.activeTool);
   const selectedWallId = useFloorPlanStore((state) => state.selectedWallId);
   const selectedOpeningId = useFloorPlanStore(
     (state) => state.selectedOpeningId,
   );
+  const selectedFurnitureId = useFloorPlanStore((state) => state.selectedFurnitureId);
   const selectWall = useFloorPlanStore((state) => state.selectWall);
   const selectOpening = useFloorPlanStore((state) => state.selectOpening);
+  const selectFurniture = useFloorPlanStore((state) => state.selectFurniture);
+  const setActiveTool = useFloorPlanStore((state) => state.setActiveTool);
   const clearSelection = useFloorPlanStore((state) => state.clearSelection);
   const addWall = useFloorPlanStore((state) => state.addWall);
   const addOpening = useFloorPlanStore((state) => state.addOpening);
+  const addFurniture = useFloorPlanStore((state) => state.addFurniture);
+  const updateFurniture = useFloorPlanStore((state) => state.updateFurniture);
   const deleteWall = useFloorPlanStore((state) => state.deleteWall);
   const deleteOpening = useFloorPlanStore((state) => state.deleteOpening);
+  const deleteFurniture = useFloorPlanStore((state) => state.deleteFurniture);
   const revision = useFloorPlanStore((state) => state.revision);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewRef = useRef<View | null>(null);
   const panRef = useRef<PanState | null>(null);
+  const furnitureDragRef = useRef<FurnitureDragState | null>(null);
   const spaceRef = useRef(false);
   const fittedRef = useRef(false);
   const lastRevisionRef = useRef(revision);
@@ -96,6 +119,7 @@ export function Canvas2D() {
   const [spaceDown, setSpaceDown] = useState(false);
   const [hoveredWallId, setHoveredWallId] = useState<string | null>(null);
   const [hoveredOpeningId, setHoveredOpeningId] = useState<string | null>(null);
+  const [hoveredFurnitureId, setHoveredFurnitureId] = useState<string | null>(null);
 
   const applyView = useCallback((next: View) => {
     viewRef.current = next;
@@ -208,6 +232,28 @@ export function Canvas2D() {
     [walls],
   );
 
+  const hitTestFurniture = useCallback(
+    (point: Vec2): Furniture | null => {
+      for (let index = furniture.length - 1; index >= 0; index -= 1) {
+        const item = furniture[index];
+        const dx = point.x - item.x;
+        const dy = point.y - item.y;
+        const cos = Math.cos(item.rotation);
+        const sin = Math.sin(item.rotation);
+        const localX = dx * cos + dy * sin;
+        const localY = -dx * sin + dy * cos;
+        if (
+          Math.abs(localX) <= item.width / 2 + 0.1 &&
+          Math.abs(localY) <= item.depth / 2 + 0.1
+        ) {
+          return item;
+        }
+      }
+      return null;
+    },
+    [furniture],
+  );
+
   const nearestWall = useCallback(
     (point: Vec2): Wall | null => {
       let best: Wall | null = null;
@@ -286,6 +332,9 @@ export function Canvas2D() {
         } else if (selectedWallId) {
           event.preventDefault();
           deleteWall(selectedWallId);
+        } else if (selectedFurnitureId) {
+          event.preventDefault();
+          deleteFurniture(selectedFurnitureId);
         }
       }
     };
@@ -303,7 +352,7 @@ export function Canvas2D() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [deleteOpening, deleteWall, selectedOpeningId, selectedWallId]);
+  }, [deleteFurniture, deleteOpening, deleteWall, selectedFurnitureId, selectedOpeningId, selectedWallId]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -404,6 +453,50 @@ export function Canvas2D() {
       ctx.moveTo(0, Math.round(sy(0)) + 0.5);
       ctx.lineTo(size.width, Math.round(sy(0)) + 0.5);
       ctx.stroke();
+    }
+
+    for (const item of furniture) {
+      const center = toScreen({ x: item.x, y: item.y });
+      const width = Math.max(3, item.width * scale);
+      const depth = Math.max(3, item.depth * scale);
+      const selected = item.id === selectedFurnitureId;
+      const hovered = item.id === hoveredFurnitureId && !selected;
+      const catalogItem = furnitureCatalogItem(item.kind);
+      ctx.save();
+      ctx.translate(center.x, center.y);
+      ctx.rotate(item.rotation);
+      roundedRect(ctx, -width / 2, -depth / 2, width, depth, Math.min(6, width / 5, depth / 5));
+      ctx.fillStyle = selected
+        ? "rgba(56, 189, 248, 0.30)"
+        : hovered
+          ? "rgba(226, 232, 240, 0.28)"
+          : `${catalogItem.color}d9`;
+      ctx.fill();
+      ctx.strokeStyle = selected
+        ? "#38bdf8"
+        : hovered
+          ? "#e2e8f0"
+          : "rgba(15, 23, 32, 0.9)";
+      ctx.lineWidth = selected ? 2 : 1.25;
+      ctx.stroke();
+      if (width > 38 && depth > 18) {
+        ctx.fillStyle = "#101820";
+        ctx.font = `600 ${Math.max(8, Math.min(11, depth * 0.3))}px ui-sans-serif, system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(catalogItem.label, 0, 0, width - 8);
+      }
+      if (selected) {
+        ctx.fillStyle = "#38bdf8";
+        for (const x of [-width / 2, width / 2]) {
+          for (const y of [-depth / 2, depth / 2]) {
+            ctx.beginPath();
+            ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+      ctx.restore();
     }
 
     const drawPill = (
@@ -695,10 +788,13 @@ export function Canvas2D() {
     activeTool,
     cursor,
     drawStart,
+    furniture,
+    hoveredFurnitureId,
     hoveredOpeningId,
     hoveredWallId,
     openings,
     selectedOpeningId,
+    selectedFurnitureId,
     selectedWallId,
     size.height,
     size.width,
@@ -752,6 +848,18 @@ export function Canvas2D() {
         selectOpening(opening.id);
         return;
       }
+      const furnitureItem = hitTestFurniture(point);
+      if (furnitureItem) {
+        selectFurniture(furnitureItem.id);
+        furnitureDragRef.current = {
+          id: furnitureItem.id,
+          pointerId: event.pointerId,
+          offsetX: furnitureItem.x - point.x,
+          offsetY: furnitureItem.y - point.y,
+        };
+        canvas.setPointerCapture(event.pointerId);
+        return;
+      }
       const wall = hitTestWall(point);
       if (wall) {
         selectWall(wall.id);
@@ -784,12 +892,35 @@ export function Canvas2D() {
     const point = screenToWorld(event.clientX, event.clientY);
     if (!point) return;
 
+    const furnitureDrag = furnitureDragRef.current;
+    if (furnitureDrag?.pointerId === event.pointerId) {
+      updateFurniture(furnitureDrag.id, {
+        x: point.x + furnitureDrag.offsetX,
+        y: point.y + furnitureDrag.offsetY,
+      });
+      setCursor(point);
+      setHoveredFurnitureId(furnitureDrag.id);
+      return;
+    }
+
     if (activeTool === "wall") {
       setCursor(snapPoint(point, walls));
       return;
     }
 
     setCursor(point);
+
+    if (activeTool === "select") {
+      const furnitureItem = hitTestFurniture(point);
+      setHoveredFurnitureId(furnitureItem?.id ?? null);
+      if (furnitureItem) {
+        setHoveredOpeningId(null);
+        setHoveredWallId(null);
+        return;
+      }
+    } else {
+      setHoveredFurnitureId(null);
+    }
 
     if (activeTool === "door" || activeTool === "window") {
       const wall = nearestWall(point);
@@ -812,18 +943,43 @@ export function Canvas2D() {
 
   const onPointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const pan = panRef.current;
-    if (!pan || pan.pointerId !== event.pointerId) return;
-    panRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+    const furnitureDrag = furnitureDragRef.current;
+    if (pan?.pointerId === event.pointerId) panRef.current = null;
+    if (furnitureDrag?.pointerId === event.pointerId) {
+      furnitureDragRef.current = null;
+    }
+    if (
+      (pan?.pointerId === event.pointerId || furnitureDrag?.pointerId === event.pointerId) &&
+      event.currentTarget.hasPointerCapture(event.pointerId)
+    ) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
   };
 
   const onPointerLeave = () => {
-    if (panRef.current) return;
+    if (panRef.current || furnitureDragRef.current) return;
     setCursor(null);
     setHoveredOpeningId(null);
     setHoveredWallId(null);
+    setHoveredFurnitureId(null);
+  };
+
+  const onFurnitureDragOver = (event: ReactDragEvent<HTMLCanvasElement>) => {
+    if (event.dataTransfer.types.includes("application/x-floorplan-furniture")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    }
+  };
+
+  const onFurnitureDrop = (event: ReactDragEvent<HTMLCanvasElement>) => {
+    const kind = event.dataTransfer.getData("application/x-floorplan-furniture");
+    if (!isFurnitureKind(kind)) return;
+    event.preventDefault();
+    const point = screenToWorld(event.clientX, event.clientY);
+    if (!point) return;
+    addFurniture(kind, point.x, point.y);
+    setActiveTool("select");
+    setCursor(point);
   };
 
   const zoomBy = (factor: number) => {
@@ -861,7 +1017,9 @@ export function Canvas2D() {
             ? "cursor-grab"
             : activeTool === "wall"
               ? "cursor-crosshair"
-              : activeTool === "door" || activeTool === "window"
+          : activeTool === "select" && hoveredFurnitureId
+            ? "cursor-grab"
+            : activeTool === "door" || activeTool === "window"
                 ? "cursor-copy"
                 : "cursor-default",
         )}
@@ -870,6 +1028,8 @@ export function Canvas2D() {
         onPointerUp={onPointerUp}
         onPointerLeave={onPointerLeave}
         onPointerCancel={onPointerUp}
+        onDragOver={onFurnitureDragOver}
+        onDrop={onFurnitureDrop}
         onContextMenu={(event) => {
           event.preventDefault();
           setDrawStart(null);

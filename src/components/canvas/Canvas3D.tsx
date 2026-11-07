@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { ContactShadows, Grid, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -8,6 +8,8 @@ import { FurnitureModel } from "./FurnitureModel";
 import { useFloorPlanStore } from "../../store/floorPlanStore";
 import { getSceneBounds, type SceneBounds } from "../../utils/geometry";
 import { generateFurnitureLayoutWithAI } from "../../services/furnitureAiService";
+import { FURNITURE_CATALOG } from "../../data/furnitureCatalog";
+import type { FurnitureKind } from "../../types/floorplan";
 
 type OrbitControlsLike = {
   target: THREE.Vector3;
@@ -104,11 +106,53 @@ function SunRig({ bounds }: { bounds: SceneBounds }) {
   );
 }
 
+function FurnitureDropTarget() {
+  const { camera, gl } = useThree();
+  const addFurniture = useFloorPlanStore((state) => state.addFurniture);
+
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const onDragOver = (event: DragEvent) => {
+      if (!Array.from(event.dataTransfer?.types ?? []).includes("application/x-floorplan-furniture")) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    };
+    const onDrop = (event: DragEvent) => {
+      const kind = event.dataTransfer?.getData("application/x-floorplan-furniture") ?? "";
+      if (!FURNITURE_CATALOG.some((item) => item.kind === kind)) return;
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      pointer.set(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      raycaster.setFromCamera(pointer, camera);
+      const point = raycaster.ray.intersectPlane(ground, new THREE.Vector3());
+      if (!point) return;
+      addFurniture(kind as FurnitureKind, point.x, point.z);
+    };
+
+    canvas.addEventListener("dragover", onDragOver);
+    canvas.addEventListener("drop", onDrop);
+    return () => {
+      canvas.removeEventListener("dragover", onDragOver);
+      canvas.removeEventListener("drop", onDrop);
+    };
+  }, [addFurniture, camera, gl]);
+
+  return null;
+}
+
 function Scene() {
   const walls = useFloorPlanStore((state) => state.walls);
   const openings = useFloorPlanStore((state) => state.openings);
   const furniture = useFloorPlanStore((state) => state.furniture);
   const selectedWallId = useFloorPlanStore((state) => state.selectedWallId);
+  const selectedFurnitureId = useFloorPlanStore((state) => state.selectedFurnitureId);
+  const isFurnitureDragging = useFloorPlanStore((state) => state.isFurnitureDragging);
   const bounds = useMemo(() => getSceneBounds(walls), [walls]);
   const span = Math.max(bounds.width, bounds.height);
 
@@ -153,12 +197,28 @@ function Scene() {
         />
       ))}
       {furniture.map((item) => (
-        <FurnitureModel key={item.id} furniture={item} />
+        <Suspense
+          key={item.id}
+          fallback={
+            <FurnitureModel
+              furniture={item}
+              selected={item.id === selectedFurnitureId}
+              proceduralOnly
+            />
+          }
+        >
+          <FurnitureModel
+            furniture={item}
+            selected={item.id === selectedFurnitureId}
+          />
+        </Suspense>
       ))}
 
       <CameraRig />
+      <FurnitureDropTarget />
       <OrbitControls
         makeDefault
+        enabled={!isFurnitureDragging}
         enableDamping
         dampingFactor={0.08}
         minDistance={7}
@@ -175,6 +235,7 @@ export function Canvas3D() {
   const openings = useFloorPlanStore((state) => state.openings);
   const furniture = useFloorPlanStore((state) => state.furniture);
   const setFurniture = useFloorPlanStore((state) => state.setFurniture);
+  const clearSelection = useFloorPlanStore((state) => state.clearSelection);
   const [furnishing, setFurnishing] = useState(false);
   const [furnishNote, setFurnishNote] = useState("");
   const furnish = useCallback(async () => {
@@ -200,6 +261,7 @@ export function Canvas3D() {
     <div className="relative h-full w-full overflow-hidden">
       <Canvas
         shadows
+        onPointerMissed={() => clearSelection()}
         dpr={[1, 2]}
         camera={{ position: [20, 16, 26], fov: 45, near: 0.1, far: 400 }}
         gl={{ antialias: true, alpha: false }}
