@@ -322,6 +322,61 @@ describe("stage 4 - buildPlanFromSegments", () => {
     });
   });
 
+  it("splits crossing imported walls into connected junction endpoints", () => {
+    const segments: PixelSegment[] = [
+      { orientation: "h", start: 0, end: 100, center: 50, thickness: 6 },
+      { orientation: "v", start: 0, end: 100, center: 50, thickness: 6 },
+    ];
+
+    const plan = buildPlanFromSegments(segments, [], 0.1);
+    const crossing = { x: 5.5, y: 5.5 };
+    const endpointsAtCrossing = plan.walls.flatMap((wall) => [
+      { x: wall.x1, y: wall.y1 },
+      { x: wall.x2, y: wall.y2 },
+    ]).filter(
+      (point) =>
+        Math.abs(point.x - crossing.x) < 1e-6 &&
+        Math.abs(point.y - crossing.y) < 1e-6,
+    );
+
+    expect(plan.walls).toHaveLength(4);
+    expect(endpointsAtCrossing).toHaveLength(4);
+  });
+
+  it("snaps a near-miss imported T-junction together", () => {
+    const segments: PixelSegment[] = [
+      { orientation: "h", start: 0, end: 100, center: 50, thickness: 6 },
+      { orientation: "v", start: 50.3, end: 100, center: 50.2, thickness: 6 },
+    ];
+
+    const plan = buildPlanFromSegments(segments, [], 0.1);
+    const junction = { x: 5.52, y: 0.8 };
+    const endpointsAtJunction = plan.walls.flatMap((wall) => [
+      { x: wall.x1, y: wall.y1 },
+      { x: wall.x2, y: wall.y2 },
+    ]).filter(
+      (point) =>
+        Math.abs(point.x - junction.x) < 1e-6 &&
+        Math.abs(point.y - junction.y) < 1e-6,
+    );
+
+    expect(plan.walls).toHaveLength(3);
+    expect(endpointsAtJunction).toHaveLength(3);
+  });
+
+  it("leaves perpendicular walls separated beyond junction tolerance alone", () => {
+    const segments: PixelSegment[] = [
+      { orientation: "h", start: 0, end: 40, center: 50, thickness: 6 },
+      { orientation: "v", start: 60, end: 100, center: 50, thickness: 6 },
+    ];
+
+    const plan = buildPlanFromSegments(segments, [], 0.1);
+
+    expect(plan.walls).toHaveLength(2);
+    expect(plan.walls[0].x2).toBeCloseTo(4.5);
+    expect(plan.walls[1].y1).toBeCloseTo(1.8);
+  });
+
   it("extends one-sided wall stubs through adjacent door masks", () => {
     const segments: PixelSegment[] = [
       { orientation: "h", start: 0, end: 40, center: 10, thickness: 6 },

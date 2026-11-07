@@ -1799,6 +1799,7 @@ function assignOpenings(
     offsetY,
     margin,
   );
+  connectWallsAtCrossings(walls);
 
   for (const opening of pixelOpenings) {
     const centerX =
@@ -2073,6 +2074,112 @@ function wallOrientation(wall: Wall): Orientation | null {
   if (Math.abs(wall.y1 - wall.y2) < 1e-6) return "h";
   if (Math.abs(wall.x1 - wall.x2) < 1e-6) return "v";
   return null;
+}
+
+const WALL_JUNCTION_TOLERANCE = 0.65;
+const MIN_WALL_PIECE_LENGTH = 0.05;
+
+/**
+ * Makes perpendicular intersections explicit in imported plans. Near-miss
+ * endpoints are extended/snapped to the centerline crossing, and walls are
+ * split there so each branch terminates at a shared junction endpoint.
+ */
+function connectWallsAtCrossings(walls: Wall[]) {
+  const cutsByWall = new Map<string, number[]>();
+  const addCut = (wall: Wall, coordinate: number) => {
+    const cuts = cutsByWall.get(wall.id) ?? [];
+    cuts.push(coordinate);
+    cutsByWall.set(wall.id, cuts);
+  };
+
+  for (let i = 0; i < walls.length; i += 1) {
+    const first = walls[i];
+    const firstOrientation = wallOrientation(first);
+    if (!firstOrientation) continue;
+
+    for (let j = i + 1; j < walls.length; j += 1) {
+      const second = walls[j];
+      const secondOrientation = wallOrientation(second);
+      if (!secondOrientation || firstOrientation === secondOrientation) continue;
+
+      const horizontal = firstOrientation === "h" ? first : second;
+      const vertical = firstOrientation === "v" ? first : second;
+      const crossingX = vertical.x1;
+      const crossingY = horizontal.y1;
+      const horizontalGap = Math.max(
+        Math.min(horizontal.x1, horizontal.x2) - crossingX,
+        0,
+        crossingX - Math.max(horizontal.x1, horizontal.x2),
+      );
+      const verticalGap = Math.max(
+        Math.min(vertical.y1, vertical.y2) - crossingY,
+        0,
+        crossingY - Math.max(vertical.y1, vertical.y2),
+      );
+      const tolerance = Math.min(
+        WALL_JUNCTION_TOLERANCE,
+        Math.max(
+          0.2,
+          (horizontal.thickness + vertical.thickness) / 2 + 0.15,
+        ),
+      );
+
+      if (horizontalGap > tolerance || verticalGap > tolerance) continue;
+
+      addCut(horizontal, crossingX);
+      addCut(vertical, crossingY);
+    }
+  }
+
+  if (cutsByWall.size === 0) return;
+
+  const connected: Wall[] = [];
+  for (const wall of walls) {
+    const orientation = wallOrientation(wall);
+    const cuts = cutsByWall.get(wall.id);
+    if (!orientation || !cuts?.length) {
+      connected.push(wall);
+      continue;
+    }
+
+    const start = orientation === "h" ? wall.x1 : wall.y1;
+    const end = orientation === "h" ? wall.x2 : wall.y2;
+    const min = Math.min(start, end);
+    const max = Math.max(start, end);
+    const sortedCuts = [...cuts].sort((a, b) => a - b);
+    const extendedMin = Math.min(min, sortedCuts[0]);
+    const extendedMax = Math.max(max, sortedCuts[sortedCuts.length - 1]);
+    const breakpoints = [extendedMin];
+
+    for (const cut of sortedCuts) {
+      const previous = breakpoints[breakpoints.length - 1];
+      if (
+        cut > extendedMin + MIN_WALL_PIECE_LENGTH &&
+        cut < extendedMax - MIN_WALL_PIECE_LENGTH &&
+        cut - previous > MIN_WALL_PIECE_LENGTH
+      ) {
+        breakpoints.push(cut);
+      }
+    }
+    breakpoints.push(extendedMax);
+
+    if (start > end) breakpoints.reverse();
+    for (let index = 0; index < breakpoints.length - 1; index += 1) {
+      const pieceStart = breakpoints[index];
+      const pieceEnd = breakpoints[index + 1];
+      if (Math.abs(pieceEnd - pieceStart) <= MIN_WALL_PIECE_LENGTH) continue;
+
+      connected.push({
+        ...wall,
+        id: index === 0 ? wall.id : `${wall.id}-junction-${index}`,
+        ...(orientation === "h"
+          ? { x1: pieceStart, x2: pieceEnd }
+          : { y1: pieceStart, y2: pieceEnd }),
+      });
+    }
+  }
+
+  walls.splice(0, walls.length, ...connected);
 }
 
 function wallAlreadyCovered(candidate: Wall, walls: Wall[]) {

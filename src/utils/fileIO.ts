@@ -1,4 +1,11 @@
-import type { Opening, SceneFile, Wall } from "../types/floorplan";
+import type {
+  Furniture,
+  FurnitureKind,
+  FurnitureSource,
+  Opening,
+  SceneFile,
+  Wall,
+} from "../types/floorplan";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -17,12 +24,14 @@ export function buildSceneFile(
   walls: Wall[],
   openings: Opening[],
   name: string,
+  furniture: Furniture[] = [],
 ): SceneFile {
   return {
     version: 1,
     name,
     walls: walls.map((wall) => ({ ...wall })),
     openings: openings.map((opening) => ({ ...opening })),
+    furniture: furniture.map((item) => ({ ...item })),
   };
 }
 
@@ -101,11 +110,68 @@ export function parseSceneFile(raw: string): SceneFile {
     throw new Error("The scene does not contain any valid walls.");
   }
 
+      const furnitureKinds: FurnitureKind[] = [
+    "bed",
+    "nightstand",
+    "wardrobe",
+    "sofa",
+    "coffee-table",
+    "media-console",
+    "desk",
+    "desk-chair",
+    "dining-table",
+    "chair",
+  ];
+  const furniture: Furniture[] = [];
+  const furnitureIds = new Set<string>();
+  if (Array.isArray(parsed.furniture)) {
+    for (const [index, item] of parsed.furniture.entries()) {
+      if (!isRecord(item) || !furnitureKinds.includes(item.kind as FurnitureKind)) {
+        continue;
+      }
+      const x = finiteNumber(item.x, Number.NaN);
+      const y = finiteNumber(item.y, Number.NaN);
+      const width = finiteNumber(item.width, Number.NaN);
+      const depth = finiteNumber(item.depth, Number.NaN);
+      const height = finiteNumber(item.height, Number.NaN);
+      const rotation = finiteNumber(item.rotation, 0);
+      const roomId = finiteNumber(item.roomId, Number.NaN);
+      if (![x, y, width, depth, height, roomId].every(Number.isFinite)) continue;
+      if (width <= 0 || depth <= 0 || height <= 0) continue;
+
+      const id =
+        typeof item.id === "string" && item.id.length > 0
+          ? item.id
+          : `furniture-${index}-${Math.random().toString(36).slice(2)}`;
+      if (furnitureIds.has(id)) continue;
+      furnitureIds.add(id);
+      furniture.push({
+        id,
+        roomId: Math.max(0, Math.floor(roomId)),
+        kind: item.kind as FurnitureKind,
+        source:
+          item.source === "local-llm"
+            ? ("local-llm" as FurnitureSource)
+            : ("geometry" as FurnitureSource),
+        roomLabel:
+          typeof item.roomLabel === "string" ? item.roomLabel : "Room",
+        x,
+        y,
+        width,
+        depth,
+        height,
+        rotation,
+        confidence: Math.max(0, Math.min(1, finiteNumber(item.confidence, 0.5))),
+      });
+    }
+  }
+
   return {
     version: 1,
     name: typeof parsed.name === "string" ? parsed.name : "Imported Floor Plan",
     walls,
     openings,
+    furniture,
   };
 }
 

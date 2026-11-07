@@ -65,7 +65,7 @@ export function ExtrudedWall({
           interval.start,
           height / 2,
           height,
-          selected ? "#8fd8f5" : "#c9d5e2",
+          selected ? "#5fc4ed" : "#e8e0d3",
           `solid-${index}-a`,
         );
       }
@@ -79,7 +79,7 @@ export function ExtrudedWall({
             interval.end,
             doorHeight + (height - doorHeight) / 2,
             height - doorHeight,
-            selected ? "#8fd8f5" : "#c9d5e2",
+            selected ? "#5fc4ed" : "#e8e0d3",
             `door-header-${index}`,
           );
         }
@@ -92,7 +92,7 @@ export function ExtrudedWall({
             interval.end,
             sill / 2,
             sill,
-            selected ? "#8fd8f5" : "#c9d5e2",
+            selected ? "#5fc4ed" : "#e8e0d3",
             `window-sill-${index}`,
           );
         }
@@ -102,7 +102,7 @@ export function ExtrudedWall({
             interval.end,
             top + (height - top) / 2,
             height - top,
-            selected ? "#8fd8f5" : "#c9d5e2",
+            selected ? "#5fc4ed" : "#e8e0d3",
             `window-header-${index}`,
           );
         }
@@ -118,7 +118,7 @@ export function ExtrudedWall({
         length,
         height / 2,
         height,
-        selected ? "#8fd8f5" : "#c9d5e2",
+        selected ? "#5fc4ed" : "#e8e0d3",
         "solid-end",
       );
     }

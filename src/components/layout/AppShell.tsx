@@ -30,6 +30,7 @@ import type { ActiveTool } from "../../types/floorplan";
 import { buildSceneFile, openSceneFile, saveSceneFile } from "../../utils/fileIO";
 import { wallLength } from "../../utils/geometry";
 import { runComplianceChecks } from "../../utils/spatialRules";
+import { generateFurnitureLayoutWithAI } from "../../services/furnitureAiService";
 import { cn } from "../../utils/cn";
 
 type ToastTone = "info" | "success" | "error";
@@ -369,6 +370,9 @@ function Sidebar() {
   const toggleAi = useFloorPlanStore((state) => state.toggleAi);
   const walls = useFloorPlanStore((state) => state.walls);
   const openings = useFloorPlanStore((state) => state.openings);
+  const furniture = useFloorPlanStore((state) => state.furniture);
+  const setFurniture = useFloorPlanStore((state) => state.setFurniture);
+  const setActiveView = useFloorPlanStore((state) => state.setActiveView);
 
   const report = useMemo(
     () => runComplianceChecks(walls, openings),
@@ -406,9 +410,16 @@ function Sidebar() {
         ))}
         <ToolButton
           icon={Armchair}
-          label="3D Furniture"
-          disabled
-          badge="Soon"
+          label="AI Furnish"
+          active={furniture.length > 0}
+          disabled={walls.length === 0}
+          onClick={() => {
+            void generateFurnitureLayoutWithAI(walls, openings).then((result) => {
+              setFurniture(result.plan.furniture);
+              setActiveView("3d");
+            });
+          }}
+          badge="AI"
         />
       </div>
 
@@ -505,6 +516,7 @@ function TopBar({
 }) {
   const walls = useFloorPlanStore((state) => state.walls);
   const openings = useFloorPlanStore((state) => state.openings);
+  const furniture = useFloorPlanStore((state) => state.furniture);
   const sceneName = useFloorPlanStore((state) => state.sceneName);
   const loadScene = useFloorPlanStore((state) => state.loadScene);
   const resetScene = useFloorPlanStore((state) => state.resetScene);
@@ -541,7 +553,7 @@ function TopBar({
           .replace(/[^a-z0-9]+/g, "-")
           .replace(/^-|-$/g, "") || "floorplan";
       const path = await saveSceneFile(
-        buildSceneFile(walls, openings, sceneName),
+        buildSceneFile(walls, openings, sceneName, furniture),
         `${slug}.json`,
       );
       if (path) notify(`Exported to ${path}`, "success");

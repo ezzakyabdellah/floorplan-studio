@@ -3,6 +3,7 @@ import {
   DEFAULTS,
   type ActiveTool,
   type ActiveView,
+  type Furniture,
   type Opening,
   type OpeningType,
   type SceneFile,
@@ -77,6 +78,7 @@ export function createDefaultScene(): SceneFile {
 type FloorPlanState = {
   walls: Wall[];
   openings: Opening[];
+  furniture: Furniture[];
   activeView: ActiveView;
   activeTool: ActiveTool;
   selectedWallId: string | null;
@@ -111,6 +113,7 @@ type FloorPlanState = {
   ) => string | null;
   updateOpening: (id: string, patch: Partial<Omit<Opening, "id">>) => void;
   deleteOpening: (id: string) => void;
+  setFurniture: (furniture: Furniture[]) => void;
   importPlan: (
     walls: Wall[],
     openings: Opening[],
@@ -125,6 +128,7 @@ const initialScene = createDefaultScene();
 export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
   walls: initialScene.walls,
   openings: initialScene.openings,
+  furniture: [],
   activeView: "2d",
   activeTool: "select",
   selectedWallId: null,
@@ -267,6 +271,8 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
         state.selectedOpeningId === id ? null : state.selectedOpeningId,
     })),
 
+  setFurniture: (furniture) => set({ furniture }),
+
   importPlan: (walls, openings, options) => {
     const replace = options?.replace ?? true;
     const wallIds = new Map<string, string>();
@@ -288,6 +294,7 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
       openings: replace
         ? remappedOpenings
         : [...state.openings, ...remappedOpenings],
+      furniture: replace ? [] : state.furniture,
       sceneName: options?.name ?? state.sceneName,
       activeView: "3d",
       activeTool: "select",
@@ -306,6 +313,7 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
     set((state) => ({
       walls: scene.walls,
       openings: scene.openings,
+      furniture: scene.furniture ?? [],
       sceneName: scene.name ?? "Imported Floor Plan",
       selectedWallId: null,
       selectedOpeningId: null,
@@ -317,6 +325,7 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
     set((state) => ({
       walls: scene.walls,
       openings: scene.openings,
+      furniture: [],
       sceneName: scene.name ?? "Untitled Floor Plan",
       selectedWallId: null,
       selectedOpeningId: null,

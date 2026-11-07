@@ -10,6 +10,7 @@ import {
   OVERLAY_PALETTE,
   validatePlanOverlay,
 } from "./planOverlayValidation";
+import { suggestFurnitureLayout } from "./furniturePlanner";
 import {
   VISION_INPUT_SIZE,
   letterboxTransform,
@@ -24,6 +25,8 @@ import {
   type PlanMeta,
   type VisionOutputMap,
 } from "./visionModelService";
+import { suggestFurnitureWithLocalAI } from "./furnitureAiService";
+import { checkOllamaStatus, DEFAULT_AI_MODELS } from "./localAiService";
 
 const ROOT = process.cwd();
 const MODEL_PATH = path.resolve(ROOT, "public/models/floorplan-layout.onnx");
@@ -237,6 +240,49 @@ function buildOpeningAttachmentSvg(
   };
 }
 
+function buildFurnitureLayoutSvg(
+  walls: Wall[],
+  furniture: ReturnType<typeof suggestFurnitureLayout>["furniture"],
+) {
+  const points = walls.flatMap((wall) => [
+    { x: wall.x1, y: wall.y1 },
+    { x: wall.x2, y: wall.y2 },
+  ]);
+  if (points.length === 0) return "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+  const pad = 2;
+  const minX = Math.min(...points.map((point) => point.x)) - pad;
+  const maxX = Math.max(...points.map((point) => point.x)) + pad;
+  const minY = Math.min(...points.map((point) => point.y)) - pad;
+  const maxY = Math.max(...points.map((point) => point.y)) + pad;
+  const scale = 8;
+  const colors: Record<string, string> = {
+    bed: "#74a9d8",
+    nightstand: "#d2b48c",
+    wardrobe: "#a98764",
+    sofa: "#7d927f",
+    "coffee-table": "#c7955c",
+    "media-console": "#667b83",
+    desk: "#c39b6a",
+    "desk-chair": "#79908c",
+    "dining-table": "#c7955c",
+    chair: "#839a8b",
+  };
+  const wallsSvg = walls
+    .map(
+      (wall) =>
+        `<line x1="${wall.x1}" y1="${wall.y1}" x2="${wall.x2}" y2="${wall.y2}" stroke="#435363" stroke-width="${Math.max(wall.thickness, 0.12)}"/>`,
+    )
+    .join("");
+  const furnitureSvg = furniture
+    .map(
+      (item) =>
+        `<rect x="${item.x - item.width / 2}" y="${item.y - item.depth / 2}" width="${item.width}" height="${item.depth}" rx="0.2" fill="${colors[item.kind] ?? "#a8b9a9"}" stroke="#334155" stroke-width="0.12" transform="rotate(${(-item.rotation * 180) / Math.PI} ${item.x} ${item.y})"><title>${item.roomLabel}: ${item.kind}</title></rect>`,
+    )
+    .join("");
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round((maxX - minX) * scale)}" height="${Math.round((maxY - minY) * scale)}" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}"><rect x="${minX}" y="${minY}" width="${maxX - minX}" height="${maxY - minY}" fill="#f3eee4"/>${wallsSvg}${furnitureSvg}</svg>`;
+}
+
 function pixelStats(data: ArrayLike<number>) {
   let min = Number.POSITIVE_INFINITY;
   let max = Number.NEGATIVE_INFINITY;
@@ -367,7 +413,7 @@ async function buildInput(samplePath: string) {
 
 describe.each(SAMPLES)("real ONNX model on %s", (samplePath) => {
   it("walks every pipeline stage with real model output", async () => {
-    const sampleName = path.basename(samplePath);
+    const sampleName = path.basename(samplePath, path.extname(samplePath));
     console.group(`\n=== ${sampleName} ===`);
 
     // ---------------------------------------------------------------- STEP 1
@@ -533,6 +579,90 @@ describe.each(SAMPLES)("real ONNX model on %s", (samplePath) => {
     // ---------------------------------------------------------------- STEP 7
     console.group("STEP 7 - processVisionOutputs: production path");
     const result = processVisionOutputs(outputMap, transform, 0.1);
+    if (sampleName === "plan01") {
+      const furniturePlan = suggestFurnitureLayout(
+        result.plan.walls,
+        result.plan.openings,
+      );
+      console.log("AI room guesses");
+      console.table(
+        furniturePlan.rooms.map(({ label, kind, area, confidence, doorCount }) => ({
+          label,
+          kind,
+          area: Number(area.toFixed(1)),
+          confidence,
+          doorCount,
+        })),
+      );
+      console.log("AI room bounds");
+      console.table(
+        furniturePlan.rooms.map(({ label, minX, minY, maxX, maxY }) => ({
+          label,
+          minX: Number(minX.toFixed(1)),
+          minY: Number(minY.toFixed(1)),
+          maxX: Number(maxX.toFixed(1)),
+          maxY: Number(maxY.toFixed(1)),
+        })),
+      );
+      console.log("AI furniture placements");
+      console.table(furniturePlan.furniture);
+      expect(
+        new Set(furniturePlan.rooms.map((room) => room.label)).size,
+      ).toBe(furniturePlan.rooms.length);
+      expect(furniturePlan.rooms.filter((room) => room.kind === "bedroom").length)
+        .toBeGreaterThanOrEqual(2);
+      expect(furniturePlan.rooms.some((room) => room.kind === "living")).toBe(true);
+      const furniturePath = path.resolve(
+        ROOT,
+        "debug",
+        `v_${base}_furniture-layout.png`,
+      );
+      await sharp(Buffer.from(buildFurnitureLayoutSvg(result.plan.walls, furniturePlan.furniture)))
+        .png()
+        .toFile(furniturePath);
+      console.log("furniture layout image ->", path.relative(ROOT, furniturePath));
+      expect(furniturePlan.furniture.length).toBeGreaterThan(0);
+      expect(furniturePlan.furniture.some((item) => item.kind === "bed")).toBe(true);
+      expect(furniturePlan.furniture.some((item) => item.kind === "sofa")).toBe(true);
+      expect(furniturePlan.furniture.some((item) => item.kind === "nightstand")).toBe(true);
+
+      if (process.env.RUN_LOCAL_AI_FURNITURE_TEST === "1") {
+        const status = await checkOllamaStatus();
+        if (!status.online || status.models.length === 0) {
+          throw new Error("RUN_LOCAL_AI_FURNITURE_TEST requires a running Ollama model.");
+        }
+        const model =
+          DEFAULT_AI_MODELS.map((preferred) =>
+            status.models.find(
+              (candidate) =>
+                candidate === preferred || candidate.startsWith(`${preferred}:`),
+            ),
+          ).find((candidate) => Boolean(candidate)) ?? status.models[0];
+        const aiFurniture = await suggestFurnitureWithLocalAI(
+          result.plan.walls,
+          result.plan.openings,
+          { model },
+        );
+        console.log(`[local AI furniture] model=${aiFurniture.model}`);
+        console.table(aiFurniture.furniture);
+        expect(aiFurniture.furniture.length).toBeGreaterThan(0);
+        expect(aiFurniture.furniture.some((item) => item.source === "local-llm")).toBe(true);
+
+        const aiFurniturePath = path.resolve(
+          ROOT,
+          "debug",
+          `v_${base}_ai-furniture-layout.png`,
+        );
+        await sharp(
+          Buffer.from(
+            buildFurnitureLayoutSvg(result.plan.walls, aiFurniture.furniture),
+          ),
+        )
+          .png()
+          .toFile(aiFurniturePath);
+        console.log("local AI furniture layout ->", path.relative(ROOT, aiFurniturePath));
+      }
+    }
     console.log("usedSegmentation", result.usedSegmentation);
     console.log("walls (feet)");
     console.table(result.plan.walls.slice(0, 10));

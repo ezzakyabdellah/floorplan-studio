@@ -30,14 +30,16 @@ async function aiFetch(input: string, init?: RequestInit): Promise<Response> {
     const { fetch: tauriFetch } = await import("@tauri-apps/plugin-http");
     return tauriFetch(input, init);
   }
-  return window.fetch(input, init);
+  return typeof window !== "undefined"
+    ? window.fetch(input, init)
+    : fetch(input, init);
 }
 
 export async function checkOllamaStatus(
   signal?: AbortSignal,
 ): Promise<OllamaStatus> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 2200);
+  const timeout = globalThis.setTimeout(() => controller.abort(), 2200);
   const abortHandler = () => controller.abort();
   signal?.addEventListener("abort", abortHandler);
 
@@ -72,7 +74,7 @@ export async function checkOllamaStatus(
           : "Unable to reach the local Ollama server",
     };
   } finally {
-    window.clearTimeout(timeout);
+    globalThis.clearTimeout(timeout);
     signal?.removeEventListener("abort", abortHandler);
   }
 }
@@ -189,6 +191,57 @@ async function streamOllama(
   }
 
   return fullText.trim();
+}
+
+export function generateLocalText(
+  prompt: string,
+  options: StreamOptions = {},
+): Promise<string> {
+  return streamOllama(prompt, options);
+}
+
+export async function generateLocalJson(
+  prompt: string,
+  options: StreamOptions = {},
+  format: unknown = "json",
+): Promise<string> {
+  const model = options.model?.trim() || "llama3.2";
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), 90_000);
+  const abortHandler = () => controller.abort();
+  options.signal?.addEventListener("abort", abortHandler);
+
+  try {
+    const response = await aiFetch(OLLAMA_GENERATE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        prompt,
+        stream: false,
+        format,
+        options: { temperature: 0.1, num_predict: 128, num_ctx: 4096 },
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `Ollama request failed (${response.status})${detail ? `: ${detail.slice(0, 180)}` : ""}`,
+      );
+    }
+
+    const payload = (await response.json()) as { response?: string; error?: string };
+    if (payload.error) throw new Error(payload.error);
+    if (typeof payload.response !== "string" || !payload.response.trim()) {
+      throw new Error("Ollama returned an empty JSON furniture suggestion.");
+    }
+    return payload.response.trim();
+  } finally {
+    globalThis.clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abortHandler);
+  }
 }
 
 export function analyzeComplianceWithLLM(

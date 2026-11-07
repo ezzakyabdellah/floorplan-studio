@@ -23,6 +23,35 @@ export type Opening = {
   width: number;
 };
 
+export type FurnitureKind =
+  | "bed"
+  | "nightstand"
+  | "wardrobe"
+  | "sofa"
+  | "coffee-table"
+  | "media-console"
+  | "desk"
+  | "desk-chair"
+  | "dining-table"
+  | "chair";
+
+export type FurnitureSource = "local-llm" | "geometry";
+
+export type Furniture = {
+  id: string;
+  roomId: number;
+  kind: FurnitureKind;
+  source: FurnitureSource;
+  roomLabel: string;
+  x: number;
+  y: number;
+  width: number;
+  depth: number;
+  height: number;
+  rotation: number;
+  confidence: number;
+};
+
 export type ActiveView = "2d" | "3d";
 
 export type ActiveTool = "select" | "wall" | "door" | "window";
@@ -32,6 +61,7 @@ export type SceneFile = {
   name?: string;
   walls: Wall[];
   openings: Opening[];
+  furniture?: Furniture[];
 };
 
 export const DEFAULTS = {
