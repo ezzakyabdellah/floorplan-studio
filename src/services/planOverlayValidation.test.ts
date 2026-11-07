@@ -144,4 +144,38 @@ describe("validatePlanOverlay", () => {
     expect(missing.missingOpenings).toHaveLength(1);
     expect(missing.missingOpenings[0].type).toBe("door");
   });
+
+  it("does not count a nearby door endpoint as an attached opening", () => {
+    const overlay = createOverlay((set) => {
+      for (let x = 8; x <= 56; x += 1) {
+        for (let dy = -2; dy <= 2; dy += 1) {
+          set(x, 32 + dy, OVERLAY_PALETTE[1]);
+        }
+      }
+      for (let x = 20; x <= 28; x += 1) {
+        for (let dy = -3; dy <= 3; dy += 1) {
+          set(x, 32 + dy, OVERLAY_PALETTE[2]);
+        }
+      }
+    });
+    const adjacentDoor: Opening = {
+      id: "opening-adjacent",
+      wallId: wall.id,
+      type: "door",
+      positionOnWall: 1 / 6,
+      width: 8,
+    };
+
+    const report = validatePlanOverlay(
+      overlay,
+      WIDTH,
+      HEIGHT,
+      { walls: [wall], openings: [adjacentDoor] },
+      TRANSFORM,
+      META,
+    );
+
+    expect(report.missingOpenings).toHaveLength(1);
+    expect(report.missingOpenings[0].matchedRatio).toBeLessThan(0.35);
+  });
 });

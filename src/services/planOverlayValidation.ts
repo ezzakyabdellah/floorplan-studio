@@ -393,6 +393,41 @@ function regionFromComponent(
   };
 }
 
+function openingAxisCoverage(
+  component: Component,
+  openingMask: Uint8Array,
+  width: number,
+  height: number,
+  tolerance: number,
+) {
+  const horizontal =
+    component.maxX - component.minX >= component.maxY - component.minY;
+  const start = horizontal ? component.minX : component.minY;
+  const end = horizontal ? component.maxX : component.maxY;
+  const center = Math.round(
+    horizontal
+      ? (component.minY + component.maxY) / 2
+      : (component.minX + component.maxX) / 2,
+  );
+  let matched = 0;
+  let samples = 0;
+
+  for (let along = start; along <= end; along += 1) {
+    samples += 1;
+    for (let offset = -tolerance; offset <= tolerance; offset += 1) {
+      const x = horizontal ? along : center + offset;
+      const y = horizontal ? center + offset : along;
+      if (x < 0 || y < 0 || x >= width || y >= height) continue;
+      if (openingMask[y * width + x]) {
+        matched += 1;
+        break;
+      }
+    }
+  }
+
+  return matched / Math.max(1, samples);
+}
+
 function computeMissingOpenings(
   reference: Uint8Array,
   openingCenterlines: Uint8Array,
@@ -411,32 +446,25 @@ function computeMissingOpenings(
   for (const component of connectedComponents(reference, width, height)) {
     if (component.pixels < minComponentPixels) continue;
 
-    // Door masks include the swing arc, so require only that a plan opening
-    // line reaches the component's bounding box instead of covering every arc
-    // pixel.
-    let intersects = false;
-    const minX = Math.max(0, component.minX - tolerance);
-    const maxX = Math.min(width - 1, component.maxX + tolerance);
-    const minY = Math.max(0, component.minY - tolerance);
-    const maxY = Math.min(height - 1, component.maxY + tolerance);
-    for (let y = minY; y <= maxY && !intersects; y += 1) {
-      for (let x = minX; x <= maxX; x += 1) {
-        if (openingCenterlines[y * width + x]) {
-          intersects = true;
-          break;
-        }
-      }
-    }
+    // Measure how much of the opening's long axis is covered. A single nearby
+    // endpoint should not make an opening attached to the wrong wall appear
+    // valid; the axis check also tolerates swing-arc pixels outside the cut.
+    const matchedRatio = openingAxisCoverage(
+      component,
+      openingCenterlines,
+      width,
+      height,
+      tolerance,
+    );
+    const intersects = matchedRatio >= 0.35;
 
     const target = intersects ? matchedMask : missingMask;
-    let hit = 0;
     for (let y = component.minY; y <= component.maxY; y += 1) {
       for (let x = component.minX; x <= component.maxX; x += 1) {
         const index = y * width + x;
         if (!reference[index]) continue;
         target[index] = 1;
         if (intersects) {
-          hit += 1;
           matchedPixels += 1;
         }
       }
@@ -446,7 +474,7 @@ function computeMissingOpenings(
     missing.push({
       ...regionFromComponent(component, transform),
       type,
-      matchedRatio: hit / component.pixels,
+      matchedRatio,
     });
   }
 

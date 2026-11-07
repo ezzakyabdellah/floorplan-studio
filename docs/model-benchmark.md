@@ -51,22 +51,20 @@ Outputs are written to `debug/benchmark/`:
 
 | Model | Plan | Inference | Wall % | Door % | Window % | Walls | Openings | Coverage | Precision | Missing openings |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| current | plan01 | 800 ms | 10.2 | 0.9 | 1.6 | 11 | 9 | 99.9% | 100% | 0 |
-| Yytsi | plan01 | 532 ms | 2.6 | 0.5 | 0.0 | 46 | 5 | 98.9% | 100% | 5 |
-| **OpenBIM (stretch)** | plan01 | **510 ms** | 10.5 | 0.9 | 1.7 | 11 | 9 | **100%** | 100% | **0** |
-| current | plan02 | 924 ms | 6.3 | 0.4 | 0.8 | 24 | 11 | 99.0% | 99% | 2 |
-| Yytsi | plan02 | 547 ms | 0.3 | 3.8 | 1.0 | 3 | 3 | 47.8% | 100% | 37 |
-| **OpenBIM (stretch)** | plan02 | **516 ms** | 10.5 | 0.7 | 1.4 | 22 | 12 | 98.4% | **100%** | **0** |
+| current | plan01 | 800 ms | 10.2 | 0.9 | 1.6 | 9 | 9 | 100% | 100% | 0 |
+| Yytsi | plan01 | 532 ms | 2.6 | 0.5 | 0.0 | 44 | 9 | 98.9% | 100% | 6 |
+| **OpenBIM (stretch)** | plan01 | **510 ms** | 10.5 | 0.9 | 1.7 | 9 | 9 | **100%** | 100% | **0** |
+| current | plan02 | 924 ms | 6.3 | 0.4 | 0.8 | 22 | 13 | 99.9% | 99.2% | 0 |
+| Yytsi | plan02 | 547 ms | 0.3 | 3.8 | 1.0 | 3 | 7 | 54.2% | 100% | 36 |
+| **OpenBIM (stretch)** | plan02 | **516 ms** | 10.5 | 0.7 | 1.4 | 22 | 12 | 98.9% | **100%** | 1 |
 
 ## Conclusion
 
 - **Yytsi is faster but not better for these raster/scanned inputs.** It detects walls well on the clean plan (`plan01`) but misses all windows there, and collapses on the scanned `plan02` (walls classified as doors). It matches the model card limitation: trained on clean CubiCasa5K SVG renderings, not scans/photos.
-- **OpenBIM M2-DA is the strongest option tested** once it uses its native **stretch** preprocessing (not the app's letterbox):
-  - matches or beats the current model on coverage/precision on both samples
-  - **0 missing openings** on both samples (current: 0 and 2)
-  - roughly 40% faster
-- The big win came from **preprocessing**, not from Python itself: OpenBIM expects a stretched 512×512 input, while the app was letterboxing it. The adapter now supports `letterbox` and `stretch` per model.
-- **Current model remains the default** only because it has more validation history. OpenBIM is the recommended candidate to switch to after testing a few more plans.
+- **OpenBIM M2-DA is a strong alternative** with its native **stretch** preprocessing: it has 100% wall precision on both samples and runs roughly 35–40% faster in the recorded measurements, though one opening is unmatched on `plan02`.
+- After retaining small opening components and bridging wall stubs to their openings, the current model has **0 missing openings** on both samples. On scanned `plan02`, it has slightly higher wall coverage than OpenBIM (99.9% vs 98.9%); OpenBIM has higher precision (100% vs 99.2%).
+- The speed/quality difference comes from both the model and preprocessing: OpenBIM expects a stretched 512×512 input, while the current model uses letterboxed 640×640. The adapter supports both per model.
+- **Current remains the default** because it retains all sample openings and has higher wall coverage on the scan; OpenBIM remains a faster option with higher precision.
 - The config adapter is in place, so switching models requires only an env var and the ONNX file; no code changes.
 
 ## Python vs TypeScript

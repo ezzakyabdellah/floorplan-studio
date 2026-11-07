@@ -5,6 +5,7 @@ import {
   dedupeParallelSegments,
   detectionSegments,
   parseDetections,
+  segmentationPlan,
   type Detection,
   type ImageTransform,
   type PixelOpening,
@@ -321,6 +322,39 @@ describe("stage 4 - buildPlanFromSegments", () => {
     });
   });
 
+  it("extends one-sided wall stubs through adjacent door masks", () => {
+    const segments: PixelSegment[] = [
+      { orientation: "h", start: 0, end: 40, center: 10, thickness: 6 },
+      { orientation: "h", start: 100, end: 140, center: 10, thickness: 6 },
+    ];
+    const openings: PixelOpening[] = [
+      {
+        type: "door",
+        minX: 40,
+        minY: 7,
+        maxX: 60,
+        maxY: 13,
+        score: 0.9,
+      },
+      {
+        type: "door",
+        minX: 80,
+        minY: 7,
+        maxX: 100,
+        maxY: 13,
+        score: 0.9,
+      },
+    ];
+
+    const plan = buildPlanFromSegments(segments, openings, 0.1);
+
+    expect(plan.walls).toHaveLength(1);
+    expect(plan.walls[0].x2 - plan.walls[0].x1).toBeCloseTo(14);
+    expect(plan.openings).toHaveLength(2);
+    expect(plan.openings[0].positionOnWall).toBeCloseTo(50 / 140);
+    expect(plan.openings[1].positionOnWall).toBeCloseTo(90 / 140);
+  });
+
   it("rejects geometry that is too short or too thick in feet", () => {
     const short: PixelSegment[] = [
       { orientation: "h", start: 0, end: 5, center: 10, thickness: 3 },
@@ -388,5 +422,43 @@ describe("stage 5 - dedupeParallelSegments", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].thickness).toBe(20);
+  });
+});
+
+describe("segmentationPlan opening components", () => {
+  it("keeps small but coherent door regions on scanned plans", () => {
+    const width = 640;
+    const height = 640;
+    const plane = width * height;
+    const masks = Array.from({ length: 4 }, () => new Uint8Array(plane));
+
+    // The real plan02 model produces adjacent door components of 51 and 33
+    // pixels. Both are architectural openings, but the previous 0.015% area
+    // cutoff discarded them at 640x640.
+    for (let y = 100; y < 103; y += 1) {
+      for (let x = 100; x < 111; x += 1) masks[2][y * width + x] = 1;
+    }
+    for (let y = 200; y < 203; y += 1) {
+      for (let x = 200; x < 217; x += 1) masks[2][y * width + x] = 1;
+    }
+
+    const result = segmentationPlan(
+      masks,
+      masks.length,
+      width,
+      height,
+      transform({ imageWidth: width, imageHeight: height }),
+    );
+
+    expect(result.openings).toHaveLength(2);
+    expect(result.openings.map(({ minX, maxX, minY, maxY }) => [
+      minX,
+      maxX,
+      minY,
+      maxY,
+    ])).toEqual([
+      [100, 111, 100, 103],
+      [200, 217, 200, 203],
+    ]);
   });
 });

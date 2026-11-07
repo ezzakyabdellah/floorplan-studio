@@ -77,6 +77,8 @@ const MIN_WALL_THICKNESS_FEET = 0.1;
 const MAX_PARALLEL_WALL_GAP_FEET = 1.5;
 const MIN_PARALLEL_OVERLAP = 0.35;
 const MIN_WALL_COMPONENT_RATIO = 0.00005;
+// Keep small opening fragments from scans; assignment still requires a nearby wall.
+const MIN_OPENING_COMPONENT_RATIO = 0.000075;
 
 export type VisionModelAvailability = {
   available: boolean;
@@ -969,6 +971,51 @@ function pointNearMask(
   return false;
 }
 
+/** Marks pixels whose square radius neighborhood contains a set pixel. */
+function dilateMaskSquare(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  const horizontal = new Uint8Array(mask.length);
+  const dilated = new Uint8Array(mask.length);
+
+  for (let y = 0; y < height; y += 1) {
+    const offset = y * width;
+    let count = 0;
+    for (let x = 0; x <= Math.min(radius, width - 1); x += 1) {
+      count += mask[offset + x];
+    }
+
+    for (let x = 0; x < width; x += 1) {
+      horizontal[offset + x] = count > 0 ? 1 : 0;
+      const leaving = x - radius;
+      const entering = x + radius + 1;
+      if (leaving >= 0) count -= mask[offset + leaving];
+      if (entering < width) count += mask[offset + entering];
+    }
+  }
+
+  for (let x = 0; x < width; x += 1) {
+    let count = 0;
+    for (let y = 0; y <= Math.min(radius, height - 1); y += 1) {
+      count += horizontal[y * width + x];
+    }
+
+    for (let y = 0; y < height; y += 1) {
+      const index = y * width + x;
+      dilated[index] = count > 0 ? 1 : 0;
+      const leaving = y - radius;
+      const entering = y + radius + 1;
+      if (leaving >= 0) count -= horizontal[leaving * width + x];
+      if (entering < height) count += horizontal[entering * width + x];
+    }
+  }
+
+  return dilated;
+}
+
 function segmentSupport(
   segment: PixelSegment,
   reference: Uint8Array,
@@ -1166,14 +1213,10 @@ export function sanitizeSegmentsWithMasks(
     drawModelSegment(planCenterline, width, height, segment, 1.5);
   }
 
+  const supportedByPlan = dilateMaskSquare(planCenterline, width, height, 14);
   const missing = new Uint8Array(plane);
   for (let index = 0; index < plane; index += 1) {
-    if (!referenceWalls[index]) continue;
-    const x = index % width;
-    const y = Math.floor(index / width);
-    if (!pointNearMask(planCenterline, width, height, x, y, 14)) {
-      missing[index] = 1;
-    }
+    if (referenceWalls[index] && !supportedByPlan[index]) missing[index] = 1;
   }
 
   const recovered: PixelSegment[] = [];
@@ -1603,7 +1646,7 @@ export function segmentationPlan(
       masks[channel],
       width,
       height,
-      Math.max(24, Math.round(width * height * 0.00015)),
+      Math.max(24, Math.round(width * height * MIN_OPENING_COMPONENT_RATIO)),
       0.75,
     );
 
@@ -1675,6 +1718,67 @@ function distanceWallToBox(
   return Math.hypot(perpendicular, along);
 }
 
+function extendWallStubsToOpenings(
+  walls: Wall[],
+  pixelOpenings: PixelOpening[],
+  feetPerPixel: number,
+  offsetX: number,
+  offsetY: number,
+  margin: number,
+) {
+  for (const opening of pixelOpenings) {
+    const centerX =
+      ((opening.minX + opening.maxX) / 2 - offsetX) * feetPerPixel + margin;
+    const centerY =
+      ((opening.minY + opening.maxY) / 2 - offsetY) * feetPerPixel + margin;
+    const boxMinX = (opening.minX - offsetX) * feetPerPixel + margin;
+    const boxMaxX = (opening.maxX - offsetX) * feetPerPixel + margin;
+    const boxMinY = (opening.minY - offsetY) * feetPerPixel + margin;
+    const boxMaxY = (opening.maxY - offsetY) * feetPerPixel + margin;
+    const horizontalOpening =
+      opening.maxX - opening.minX >= opening.maxY - opening.minY;
+
+    let bestWall: Wall | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const wall of walls) {
+      const horizontal = Math.abs(wall.y1 - wall.y2) < 1e-6;
+      if (horizontal !== horizontalOpening) continue;
+
+      const distance = distanceWallToBox(
+        wall,
+        boxMinX,
+        boxMinY,
+        boxMaxX,
+        boxMaxY,
+        centerX,
+        centerY,
+      );
+      const threshold = wall.thickness / 2 + 3;
+      if (distance <= threshold && distance < bestDistance) {
+        bestWall = wall;
+        bestDistance = distance;
+      }
+    }
+
+    if (!bestWall) continue;
+    const threshold = bestWall.thickness / 2 + 3;
+    if (horizontalOpening) {
+      if (centerX < bestWall.x1 && bestWall.x1 - boxMaxX <= threshold) {
+        bestWall.x1 = Math.min(bestWall.x1, boxMinX);
+      } else if (
+        centerX > bestWall.x2 &&
+        boxMinX - bestWall.x2 <= threshold
+      ) {
+        bestWall.x2 = Math.max(bestWall.x2, boxMaxX);
+      }
+    } else if (centerY < bestWall.y1 && bestWall.y1 - boxMaxY <= threshold) {
+      bestWall.y1 = Math.min(bestWall.y1, boxMinY);
+    } else if (centerY > bestWall.y2 && boxMinY - bestWall.y2 <= threshold) {
+      bestWall.y2 = Math.max(bestWall.y2, boxMaxY);
+    }
+  }
+}
+
 function assignOpenings(
   walls: Wall[],
   pixelOpenings: PixelOpening[],
@@ -1686,6 +1790,15 @@ function assignOpenings(
   const openings: Opening[] = [];
   const timestamp = Date.now();
   let index = 0;
+
+  extendWallStubsToOpenings(
+    walls,
+    pixelOpenings,
+    feetPerPixel,
+    offsetX,
+    offsetY,
+    margin,
+  );
 
   for (const opening of pixelOpenings) {
     const centerX =
@@ -1785,7 +1898,9 @@ function bridgeOpenings(
         : (opening.minX + opening.maxX) / 2;
     const span = Math.max(8, orientation === "h" ? width : height);
     const cross = Math.max(8, orientation === "h" ? height : width);
-    const tolerance = Math.max(12, cross * 0.8);
+    const tolerance = Math.max(16, cross * 0.8);
+    const openingStart = orientation === "h" ? opening.minX : opening.minY;
+    const openingEnd = orientation === "h" ? opening.maxX : opening.maxY;
 
     const candidates = result.filter(
       (segment) =>
@@ -1799,19 +1914,37 @@ function bridgeOpenings(
       .filter((segment) => segment.start >= main - span * 0.5)
       .sort((a, b) => a.start - b.start)[0];
 
-    if (left && right && right.start - left.end <= span * 2) {
-      const merged: PixelSegment = {
-        orientation,
-        start: Math.min(left.start, right.start),
-        end: Math.max(left.end, right.end),
-        center:
-          (left.center * (left.end - left.start) +
-            right.center * (right.end - right.start)) /
-          Math.max(1, left.end - left.start + (right.end - right.start)),
-        thickness: Math.max(left.thickness, right.thickness),
-      };
-      result = result.filter((segment) => segment !== left && segment !== right);
-      result.push(merged);
+    const attachTolerance = Math.max(8, cross * 0.8);
+    if (left && right) {
+      if (right.start - left.end <= span * 2) {
+        const merged: PixelSegment = {
+          orientation,
+          start: Math.min(left.start, right.start),
+          end: Math.max(left.end, right.end),
+          center:
+            (left.center * (left.end - left.start) +
+              right.center * (right.end - right.start)) /
+            Math.max(1, left.end - left.start + (right.end - right.start)),
+          thickness: Math.max(left.thickness, right.thickness),
+        };
+        result = result.filter((segment) => segment !== left && segment !== right);
+        result.push(merged);
+        continue;
+      }
+
+      // If the class mask touches only one wall stub, extend that stub through
+      // the opening. Otherwise snapping clamps the opening to the stub's end.
+      const leftGap = Math.max(0, openingStart - left.end);
+      const rightGap = Math.max(0, right.start - openingEnd);
+      if (leftGap <= attachTolerance && leftGap < rightGap) {
+        left.end = Math.max(left.end, openingEnd);
+      } else if (rightGap <= attachTolerance && rightGap < leftGap) {
+        right.start = Math.min(right.start, openingStart);
+      }
+    } else if (left && openingStart - left.end <= attachTolerance) {
+      left.end = Math.max(left.end, openingEnd);
+    } else if (right && right.start - openingEnd <= attachTolerance) {
+      right.start = Math.min(right.start, openingStart);
     }
   }
 
@@ -2015,14 +2148,10 @@ export function sanitizePlanWithMasks(
     drawLineMask(planCenterline, width, height, a.x, a.y, b.x, b.y, 1.5);
   }
 
+  const supportedByPlan = dilateMaskSquare(planCenterline, width, height, 14);
   const missing = new Uint8Array(plane);
   for (let index = 0; index < plane; index += 1) {
-    if (!wallMask[index]) continue;
-    const x = index % width;
-    const y = Math.floor(index / width);
-    if (!pointNearMask(planCenterline, width, height, x, y, 14)) {
-      missing[index] = 1;
-    }
+    if (wallMask[index] && !supportedByPlan[index]) missing[index] = 1;
   }
 
   const walls = [...plan.walls];
@@ -2087,7 +2216,10 @@ export function sanitizePlanWithMasks(
   }
 
   const pixelOpenings: PixelOpening[] = [];
-  const minArea = Math.max(24, Math.round(width * height * 0.00015));
+  const minArea = Math.max(
+    24,
+    Math.round(width * height * MIN_OPENING_COMPONENT_RATIO),
+  );
   for (let channel = 0; channel < channels; channel += 1) {
     const role = segClassRole(channel, channels, classRoles);
     if (role !== "door" && role !== "window") continue;

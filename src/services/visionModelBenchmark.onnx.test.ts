@@ -232,9 +232,11 @@ async function runCandidate(
 
   const primary = outputMap[session.outputNames[0]];
   const [, channels, height, width] = primary.dims as number[];
+  const postprocessStartedAt = performance.now();
   const result = processVisionOutputs(outputMap, transform, 0.1, {
     classRoles: candidate.config.classRoles,
   });
+  const postprocessMs = performance.now() - postprocessStartedAt;
 
   const overlay = buildOverlay(
     data,
@@ -276,6 +278,7 @@ async function runCandidate(
     sample: sampleName,
     inputSize,
     inferenceMs: Number(inferenceMs.toFixed(0)),
+    postprocessMs: Number(postprocessMs.toFixed(0)),
     classPct: classCounts(primary.data, channels, width, height),
     walls: result.plan.walls.length,
     openings: result.plan.openings.length,

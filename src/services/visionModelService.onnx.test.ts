@@ -3,7 +3,8 @@ import path from "node:path";
 import { InferenceSession, Tensor } from "onnxruntime-node";
 import sharp from "sharp";
 import { beforeAll, describe, expect, it } from "vitest";
-import type { Wall } from "../types/floorplan";
+import type { Opening, Wall } from "../types/floorplan";
+import { pointAtDistance, wallLength } from "../utils/geometry";
 import {
   OVERLAY_DIM,
   OVERLAY_PALETTE,
@@ -19,6 +20,8 @@ import {
   segmentationOutputs,
   segmentationPlan,
   segmentationToMasks,
+  type ImageTransform,
+  type PlanMeta,
   type VisionOutputMap,
 } from "./visionModelService";
 
@@ -127,6 +130,111 @@ function buildOverlayPixels(
   }
 
   return out;
+}
+
+function buildClassPixels(
+  rgb: Uint8Array,
+  mask: Uint8Array,
+  color: [number, number, number],
+): Buffer {
+  const out = Buffer.alloc(mask.length * 3);
+
+  for (let index = 0; index < mask.length; index += 1) {
+    const pixel = index * 3;
+    if (mask[index]) {
+      out[pixel] = color[0];
+      out[pixel + 1] = color[1];
+      out[pixel + 2] = color[2];
+      continue;
+    }
+
+    const gray = Math.round(
+      (0.299 * rgb[pixel] + 0.587 * rgb[pixel + 1] + 0.114 * rgb[pixel + 2]) *
+        OVERLAY_DIM,
+    );
+    out[pixel] = gray;
+    out[pixel + 1] = gray;
+    out[pixel + 2] = gray;
+  }
+
+  return out;
+}
+
+function buildOpeningAttachmentSvg(
+  plan: { walls: Wall[]; openings: Opening[]; meta: PlanMeta },
+  transform: ImageTransform,
+) {
+  const scaleX = transform.scaleX ?? transform.scale;
+  const scaleY = transform.scaleY ?? transform.scale;
+  const modelPoint = (x: number, y: number) => ({
+    x:
+      (((x - plan.meta.margin) / plan.meta.feetPerPixel + plan.meta.minX) *
+        scaleX) +
+      transform.padX,
+    y:
+      (((y - plan.meta.margin) / plan.meta.feetPerPixel + plan.meta.minY) *
+        scaleY) +
+      transform.padY,
+  });
+  const sourcePoint = (x: number, y: number) => ({
+    x: (x - transform.padX) / scaleX,
+    y: (y - transform.padY) / scaleY,
+  });
+
+  const summaries: Array<Record<string, string | number>> = [];
+  const wallSummaries = plan.walls.map((wall) => {
+    const modelA = modelPoint(wall.x1, wall.y1);
+    const modelB = modelPoint(wall.x2, wall.y2);
+    const a = sourcePoint(modelA.x, modelA.y);
+    const b = sourcePoint(modelB.x, modelB.y);
+    return {
+      wallId: wall.id,
+      orientation: Math.abs(wall.y1 - wall.y2) <= 1e-6 ? "horizontal" : "vertical",
+      imageX1: Number(a.x.toFixed(1)),
+      imageY1: Number(a.y.toFixed(1)),
+      imageX2: Number(b.x.toFixed(1)),
+      imageY2: Number(b.y.toFixed(1)),
+    };
+  });
+  const marks = plan.openings.flatMap((opening, index) => {
+    const wall = plan.walls.find((candidate) => candidate.id === opening.wallId);
+    if (!wall) return [];
+    const length = wallLength(wall);
+    if (length <= 0) return [];
+
+    const center = opening.positionOnWall * length;
+    const start = pointAtDistance(wall, Math.max(0, center - opening.width / 2));
+    const end = pointAtDistance(
+      wall,
+      Math.min(length, center + opening.width / 2),
+    );
+    const a = modelPoint(start.x, start.y);
+    const b = modelPoint(end.x, end.y);
+    const centerImage = sourcePoint((a.x + b.x) / 2, (a.y + b.y) / 2);
+    const horizontal = Math.abs(wall.y1 - wall.y2) <= 1e-6;
+
+    summaries.push({
+      opening: index,
+      type: opening.type,
+      wallId: wall.id,
+      wallOrientation: horizontal ? "horizontal" : "vertical",
+      imageX: Number(centerImage.x.toFixed(1)),
+      imageY: Number(centerImage.y.toFixed(1)),
+      widthFeet: Number(opening.width.toFixed(2)),
+    });
+
+    const color = opening.type === "door" ? "#ff2d95" : "#00e5ff";
+    return [
+      `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${color}" stroke-width="4" stroke-linecap="round"/>`,
+      `<circle cx="${(a.x + b.x) / 2}" cy="${(a.y + b.y) / 2}" r="3" fill="#ffffff" stroke="${color}" stroke-width="2"/>`,
+    ];
+  });
+
+  return {
+    summaries,
+    wallSummaries,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${VISION_INPUT_SIZE}" height="${VISION_INPUT_SIZE}" viewBox="0 0 ${VISION_INPUT_SIZE} ${VISION_INPUT_SIZE}">${marks.join("")}</svg>`,
+  };
 }
 
 function pixelStats(data: ArrayLike<number>) {
@@ -370,6 +478,27 @@ describe.each(SAMPLES)("real ONNX model on %s", (samplePath) => {
     });
     expect(overlayMeta.width).toBe(width);
     expect(overlayMeta.height).toBe(height);
+
+    const rawMasks = segmentationToMasks(
+      primary.data,
+      channels,
+      width,
+      height,
+      0,
+    );
+    for (const { channel, name } of [
+      { channel: 1, name: "wall" },
+      { channel: 2, name: "door" },
+      { channel: 3, name: "window" },
+    ]) {
+      const classPath = path.resolve(ROOT, "debug", `v_${base}_${name}.png`);
+      await sharp(buildClassPixels(rgb, rawMasks[channel], OVERLAY_PALETTE[channel]), {
+        raw: { width, height, channels: 3 },
+      })
+        .png()
+        .toFile(classPath);
+      console.log(`${name} class image ->`, path.relative(ROOT, classPath));
+    }
     console.groupEnd();
 
     // ---------------------------------------------------------------- STEP 6
@@ -409,6 +538,21 @@ describe.each(SAMPLES)("real ONNX model on %s", (samplePath) => {
     console.table(result.plan.walls.slice(0, 10));
     console.log("openings assigned to walls");
     console.table(result.plan.openings);
+    const attachmentView = buildOpeningAttachmentSvg(result.plan, transform);
+    console.log("opening attachment positions (source-image pixels)");
+    console.table(attachmentView.summaries);
+    console.log("wall centerlines (source-image pixels)");
+    console.table(attachmentView.wallSummaries);
+    const attachmentPath = path.resolve(
+      ROOT,
+      "debug",
+      `v_${base}_attachments.png`,
+    );
+    await sharp(overlayPath)
+      .composite([{ input: Buffer.from(attachmentView.svg) }])
+      .png()
+      .toFile(attachmentPath);
+    console.log("opening attachment image ->", path.relative(ROOT, attachmentPath));
     console.log("world", {
       width: Number(result.plan.worldWidth.toFixed(2)),
       height: Number(result.plan.worldHeight.toFixed(2)),
@@ -483,8 +627,9 @@ describe.each(SAMPLES)("real ONNX model on %s", (samplePath) => {
     console.groupEnd();
 
     expect(validation.referenceWallPixels).toBeGreaterThan(0);
-    expect(validation.wallCoverage).toBeGreaterThan(0.5);
-    expect(validation.wallPrecision).toBeGreaterThan(0.5);
+    expect(validation.wallCoverage).toBeGreaterThan(0.98);
+    expect(validation.wallPrecision).toBeGreaterThan(0.98);
+    expect(validation.missingOpenings).toHaveLength(0);
 
     console.groupEnd();
 

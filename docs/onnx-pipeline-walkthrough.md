@@ -227,7 +227,11 @@ How it works:
 4. Plan wall pixels far from any reference wall/door/window → **phantom wall**.
 5. Reference door/window components with less than 35% coverage by plan openings → **missing opening**.
 
-Output image: `debug/v_planNN_validation.png`
+Output images:
+
+- `debug/v_planNN_wall.png`, `debug/v_planNN_door.png`, `debug/v_planNN_window.png` — isolated class masks over the dimmed source image.
+- `debug/v_planNN_attachments.png` — final door cuts in magenta and window cuts in cyan over the colored class map.
+- `debug/v_planNN_validation.png` — wall/opening coverage and missing-geometry diagnostics.
 
 | Color | Meaning |
 | --- | --- |
@@ -249,9 +253,9 @@ Real results from the sample plans after sanitization:
 
 | | plan01 | plan02 |
 | --- | --- | --- |
-| wall coverage | 99.9% | 99.0% |
-| wall precision | 100% | 99% |
-| missing openings | 0 | 2 doors |
+| wall coverage | 100% | 99.9% |
+| wall precision | 100% | 99.2% |
+| missing openings | 0 | 0 |
 
 Tuning options are passed to `validatePlanOverlay`: `wallTolerance` (default `14`), `openingTolerance` (default `6`), `phantomTolerance` (default `5`), and `minComponentPixels` (default `20`).
 
