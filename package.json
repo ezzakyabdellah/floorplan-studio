@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:onnx": "vitest run --config vitest.onnx.config.ts"
+    "test:onnx": "vitest run --config vitest.onnx.config.ts",
+    "test:benchmark": "vitest run --config vitest.onnx.config.ts src/services/visionModelBenchmark.onnx.test.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

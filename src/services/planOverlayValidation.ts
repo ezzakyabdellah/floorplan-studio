@@ -107,6 +107,14 @@ function decodeOverlayClasses(
   return { walls, doors, windows };
 }
 
+function scaleX(transform: ImageTransform) {
+  return transform.scaleX ?? transform.scale;
+}
+
+function scaleY(transform: ImageTransform) {
+  return transform.scaleY ?? transform.scale;
+}
+
 function feetToModel(
   x: number,
   y: number,
@@ -116,8 +124,8 @@ function feetToModel(
   const imageX = (x - meta.margin) / meta.feetPerPixel + meta.minX;
   const imageY = (y - meta.margin) / meta.feetPerPixel + meta.minY;
   return {
-    x: imageX * transform.scale + transform.padX,
-    y: imageY * transform.scale + transform.padY,
+    x: imageX * scaleX(transform) + transform.padX,
+    y: imageY * scaleY(transform) + transform.padY,
   };
 }
 
@@ -127,8 +135,8 @@ function modelToImage(
   transform: ImageTransform,
 ) {
   return {
-    x: (x - transform.padX) / transform.scale,
-    y: (y - transform.padY) / transform.scale,
+    x: (x - transform.padX) / scaleX(transform),
+    y: (y - transform.padY) / scaleY(transform),
   };
 }
 
@@ -178,9 +186,11 @@ function rasterizeWalls(
   for (const wall of plan.walls) {
     const a = feetToModel(wall.x1, wall.y1, transform, meta);
     const b = feetToModel(wall.x2, wall.y2, transform, meta);
+    const horizontal = Math.abs(wall.y1 - wall.y2) < 1e-6;
     const thickness = Math.max(
       1.5,
-      (wall.thickness / meta.feetPerPixel) * transform.scale,
+      (wall.thickness / meta.feetPerPixel) *
+        (horizontal ? scaleY(transform) : scaleX(transform)),
     );
     drawSegment(bands, width, height, a.x, a.y, b.x, b.y, thickness);
     drawSegment(centerlines, width, height, a.x, a.y, b.x, b.y, 1.5);
@@ -217,9 +227,11 @@ function rasterizeOpenings(
     );
     const a = feetToModel(start.x, start.y, transform, meta);
     const b = feetToModel(end.x, end.y, transform, meta);
+    const horizontal = Math.abs(wall.y1 - wall.y2) < 1e-6;
     const thickness = Math.max(
       1.5,
-      (wall.thickness / meta.feetPerPixel) * transform.scale,
+      (wall.thickness / meta.feetPerPixel) *
+        (horizontal ? scaleY(transform) : scaleX(transform)),
     );
 
     drawSegment(

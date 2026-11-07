@@ -17,9 +17,59 @@ import {
 } from "../utils/geometry";
 
 export const VISION_INPUT_SIZE = 640;
-export const VISION_MODEL_URL =
-  (import.meta.env.VITE_FLOORPLAN_ONNX_MODEL as string | undefined)?.trim() ||
-  "/models/floorplan-layout.onnx";
+
+export type VisionClassRole = "wall" | OpeningType | null;
+
+export type VisionModelConfig = {
+  url: string;
+  inputSize: number;
+  resizeMode: "letterbox" | "stretch";
+  normalization: "unit" | "imagenet";
+  padding: [number, number, number];
+  classRoles: Record<number, VisionClassRole>;
+};
+
+export const VISION_MODEL_PRESETS: Record<string, VisionModelConfig> = {
+  current: {
+    url: "/models/floorplan-layout.onnx",
+    inputSize: VISION_INPUT_SIZE,
+    resizeMode: "letterbox",
+    normalization: "unit",
+    padding: [114, 114, 114],
+    classRoles: { 0: null, 1: "wall", 2: "door", 3: "window" },
+  },
+  yytsi: {
+    url: "/models/yytsi-floorplan.onnx",
+    inputSize: 512,
+    resizeMode: "letterbox",
+    normalization: "imagenet",
+    padding: [124, 116, 104],
+    classRoles: { 0: null, 1: "wall", 2: "door", 3: "window" },
+  },
+  openbim: {
+    url: "/models/openbim-floorplan.onnx",
+    inputSize: 512,
+    resizeMode: "stretch",
+    normalization: "imagenet",
+    padding: [114, 114, 114],
+    classRoles: { 0: null, 1: "wall", 2: "window", 3: "door" },
+  },
+};
+
+export function resolveVisionModelConfig(): VisionModelConfig {
+  const presetName = (
+    import.meta.env.VITE_FLOORPLAN_MODEL as string | undefined
+  )?.trim();
+  const preset =
+    (presetName ? VISION_MODEL_PRESETS[presetName] : undefined) ??
+    VISION_MODEL_PRESETS.current;
+  const url =
+    (import.meta.env.VITE_FLOORPLAN_ONNX_MODEL as string | undefined)?.trim() ||
+    preset.url;
+  return { ...preset, url };
+}
+
+export const VISION_MODEL_URL = resolveVisionModelConfig().url;
 
 // Post-processing thresholds for the segmentation path.
 const SEGMENTATION_CONFIDENCE_MARGIN = 0.5;
@@ -128,6 +178,8 @@ export type ImageTransform = {
   imageWidth: number;
   imageHeight: number;
   scale: number;
+  scaleX?: number;
+  scaleY?: number;
   padX: number;
   padY: number;
 };
@@ -237,7 +289,7 @@ export function checkVisionModelAvailability(
   force = false,
 ): Promise<VisionModelAvailability> {
   if (force) availabilityPromise = null;
-  availabilityPromise ??= probeModel(VISION_MODEL_URL);
+  availabilityPromise ??= probeModel(resolveVisionModelConfig().url);
   return availabilityPromise;
 }
 
@@ -268,7 +320,7 @@ async function loadSession(signal?: AbortSignal): Promise<OrtSession> {
   if (!sessionPromise) {
     sessionPromise = (async () => {
       const ort = await loadOrt();
-      return ort.InferenceSession.create(VISION_MODEL_URL, {
+      return ort.InferenceSession.create(resolveVisionModelConfig().url, {
         executionProviders: ["wasm"],
         graphOptimizationLevel: "all",
       });
@@ -284,27 +336,54 @@ async function loadSession(signal?: AbortSignal): Promise<OrtSession> {
 export function letterboxTransform(
   width: number,
   height: number,
+  inputSize = VISION_INPUT_SIZE,
 ): ImageTransform {
   const scale = Math.min(
-    VISION_INPUT_SIZE / Math.max(1, width),
-    VISION_INPUT_SIZE / Math.max(1, height),
+    inputSize / Math.max(1, width),
+    inputSize / Math.max(1, height),
   );
 
   return {
     imageWidth: width,
     imageHeight: height,
     scale,
-    padX: (VISION_INPUT_SIZE - width * scale) / 2,
-    padY: (VISION_INPUT_SIZE - height * scale) / 2,
+    padX: (inputSize - width * scale) / 2,
+    padY: (inputSize - height * scale) / 2,
+  };
+}
+
+export function scaleX(transform: ImageTransform) {
+  return transform.scaleX ?? transform.scale;
+}
+
+export function scaleY(transform: ImageTransform) {
+  return transform.scaleY ?? transform.scale;
+}
+
+export function stretchTransform(
+  width: number,
+  height: number,
+  inputSize = VISION_INPUT_SIZE,
+): ImageTransform {
+  const sx = inputSize / Math.max(1, width);
+  const sy = inputSize / Math.max(1, height);
+  return {
+    imageWidth: width,
+    imageHeight: height,
+    scale: Math.min(sx, sy),
+    scaleX: sx,
+    scaleY: sy,
+    padX: 0,
+    padY: 0,
   };
 }
 
 function modelToImageX(x: number, transform: ImageTransform) {
-  return (x - transform.padX) / transform.scale;
+  return (x - transform.padX) / scaleX(transform);
 }
 
 function modelToImageY(y: number, transform: ImageTransform) {
-  return (y - transform.padY) / transform.scale;
+  return (y - transform.padY) / scaleY(transform);
 }
 
 // Convert an interleaved 640x640 RGB/RGBA buffer into a normalized CHW tensor.
@@ -328,51 +407,70 @@ export function planarFloat32FromPixels(
   return values;
 }
 
-// Letterbox to 640x640 and normalize RGB values into a CHW float tensor.
+export function normalizeChw(
+  values: Float32Array,
+  normalization: VisionModelConfig["normalization"],
+): Float32Array {
+  if (normalization === "unit") return values;
+
+  const mean = [0.485, 0.456, 0.406];
+  const std = [0.229, 0.224, 0.225];
+  const plane = values.length / 3;
+
+  for (let channel = 0; channel < 3; channel += 1) {
+    const offset = channel * plane;
+    for (let index = 0; index < plane; index += 1) {
+      values[offset + index] =
+        (values[offset + index] - mean[channel]) / std[channel];
+    }
+  }
+
+  return values;
+}
+
+// Letterbox to the configured input size and normalize into a CHW tensor.
 async function buildInputTensor(
   image: HTMLImageElement,
   ort: OrtModule,
+  config: VisionModelConfig,
   signal?: AbortSignal,
 ) {
-  const transform = letterboxTransform(image.naturalWidth, image.naturalHeight);
+  const size = config.inputSize;
+  const transform =
+    config.resizeMode === "stretch"
+      ? stretchTransform(image.naturalWidth, image.naturalHeight, size)
+      : letterboxTransform(image.naturalWidth, image.naturalHeight, size);
   const canvas = document.createElement("canvas");
-  canvas.width = VISION_INPUT_SIZE;
-  canvas.height = VISION_INPUT_SIZE;
+  canvas.width = size;
+  canvas.height = size;
 
   const context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) throw new Error("Canvas 2D is not available.");
 
-  context.fillStyle = "rgb(114, 114, 114)";
-  context.fillRect(0, 0, VISION_INPUT_SIZE, VISION_INPUT_SIZE);
-  context.drawImage(
-    image,
-    transform.padX,
-    transform.padY,
-    image.naturalWidth * transform.scale,
-    image.naturalHeight * transform.scale,
-  );
+  if (config.resizeMode === "stretch") {
+    context.drawImage(image, 0, 0, size, size);
+  } else {
+    const [r, g, b] = config.padding;
+    context.fillStyle = `rgb(${r}, ${g}, ${b})`;
+    context.fillRect(0, 0, size, size);
+    context.drawImage(
+      image,
+      transform.padX,
+      transform.padY,
+      image.naturalWidth * transform.scale,
+      image.naturalHeight * transform.scale,
+    );
+  }
 
-  const { data } = context.getImageData(
-    0,
-    0,
-    VISION_INPUT_SIZE,
-    VISION_INPUT_SIZE,
-  );
-  const values = planarFloat32FromPixels(
-    data,
-    4,
-    VISION_INPUT_SIZE,
-    signal,
+  const { data } = context.getImageData(0, 0, size, size);
+  const values = normalizeChw(
+    planarFloat32FromPixels(data, 4, size, signal),
+    config.normalization,
   );
 
   return {
     transform,
-    tensor: new ort.Tensor("float32", values, [
-      1,
-      3,
-      VISION_INPUT_SIZE,
-      VISION_INPUT_SIZE,
-    ]),
+    tensor: new ort.Tensor("float32", values, [1, 3, size, size]),
   };
 }
 
@@ -541,7 +639,7 @@ export function detectionSegments(
             start: Math.min(start, end),
             end: Math.max(start, end),
             center,
-            thickness: heightPx / transform.scale,
+            thickness: heightPx / scaleY(transform),
           });
         }
       } else {
@@ -557,7 +655,7 @@ export function detectionSegments(
             start: Math.min(start, end),
             end: Math.max(start, end),
             center,
-            thickness: widthPx / transform.scale,
+            thickness: widthPx / scaleX(transform),
           });
         }
       }
@@ -916,19 +1014,19 @@ function imageSegmentToModel(
   if (segment.orientation === "h") {
     return {
       orientation: "h",
-      start: segment.start * transform.scale + transform.padX,
-      end: segment.end * transform.scale + transform.padX,
-      center: segment.center * transform.scale + transform.padY,
-      thickness: segment.thickness * transform.scale,
+      start: segment.start * scaleX(transform) + transform.padX,
+      end: segment.end * scaleX(transform) + transform.padX,
+      center: segment.center * scaleY(transform) + transform.padY,
+      thickness: segment.thickness * scaleY(transform),
     };
   }
 
   return {
     orientation: "v",
-    start: segment.start * transform.scale + transform.padY,
-    end: segment.end * transform.scale + transform.padY,
-    center: segment.center * transform.scale + transform.padX,
-    thickness: segment.thickness * transform.scale,
+    start: segment.start * scaleY(transform) + transform.padY,
+    end: segment.end * scaleY(transform) + transform.padY,
+    center: segment.center * scaleX(transform) + transform.padX,
+    thickness: segment.thickness * scaleX(transform),
   };
 }
 
@@ -939,19 +1037,19 @@ function modelSegmentToImage(
   if (segment.orientation === "h") {
     return {
       orientation: "h",
-      start: (segment.start - transform.padX) / transform.scale,
-      end: (segment.end - transform.padX) / transform.scale,
-      center: (segment.center - transform.padY) / transform.scale,
-      thickness: segment.thickness / transform.scale,
+      start: (segment.start - transform.padX) / scaleX(transform),
+      end: (segment.end - transform.padX) / scaleX(transform),
+      center: (segment.center - transform.padY) / scaleY(transform),
+      thickness: segment.thickness / scaleY(transform),
     };
   }
 
   return {
     orientation: "v",
-    start: (segment.start - transform.padY) / transform.scale,
-    end: (segment.end - transform.padY) / transform.scale,
-    center: (segment.center - transform.padX) / transform.scale,
-    thickness: segment.thickness / transform.scale,
+    start: (segment.start - transform.padY) / scaleY(transform),
+    end: (segment.end - transform.padY) / scaleY(transform),
+    center: (segment.center - transform.padX) / scaleX(transform),
+    thickness: segment.thickness / scaleX(transform),
   };
 }
 
@@ -1409,7 +1507,10 @@ export function segmentationToMasks(
 export function segClassRole(
   classId: number,
   channels: number,
-): "wall" | OpeningType | null {
+  classRoles?: Record<number, VisionClassRole>,
+): VisionClassRole {
+  if (classRoles) return classRoles[classId] ?? null;
+
   if (channels <= 3) {
     if (classId === 0) return "wall";
     if (classId === 1) return "door";
@@ -1477,13 +1578,14 @@ export function segmentationPlan(
   height: number,
   transform: ImageTransform,
   signal?: AbortSignal,
+  classRoles?: Record<number, VisionClassRole>,
 ) {
   const segments: PixelSegment[] = [];
   const openings: PixelOpening[] = [];
 
   for (let channel = 0; channel < masks.length; channel += 1) {
     throwIfAborted(signal);
-    const role = segClassRole(channel, channels);
+    const role = segClassRole(channel, channels, classRoles);
     if (!role) continue;
 
     if (role === "wall") {
@@ -1522,12 +1624,13 @@ export function segmentationPlan(
       segment.start = modelToImageX(segment.start, transform);
       segment.end = modelToImageX(segment.end, transform);
       segment.center = modelToImageY(segment.center, transform);
+      segment.thickness /= scaleY(transform);
     } else {
       segment.start = modelToImageY(segment.start, transform);
       segment.end = modelToImageY(segment.end, transform);
       segment.center = modelToImageX(segment.center, transform);
+      segment.thickness /= scaleX(transform);
     }
-    segment.thickness /= transform.scale;
   }
 
   return { segments, openings };
@@ -1814,8 +1917,8 @@ function feetToModelPoint(
   const imageX = (x - meta.margin) / meta.feetPerPixel + meta.minX;
   const imageY = (y - meta.margin) / meta.feetPerPixel + meta.minY;
   return {
-    x: imageX * transform.scale + transform.padX,
-    y: imageY * transform.scale + transform.padY,
+    x: imageX * scaleX(transform) + transform.padX,
+    y: imageY * scaleY(transform) + transform.padY,
   };
 }
 
@@ -1825,8 +1928,8 @@ function modelPointToFeet(
   transform: ImageTransform,
   meta: PlanMeta,
 ) {
-  const imageX = (x - transform.padX) / transform.scale;
-  const imageY = (y - transform.padY) / transform.scale;
+  const imageX = (x - transform.padX) / scaleX(transform);
+  const imageY = (y - transform.padY) / scaleY(transform);
   return {
     x: (imageX - meta.minX) * meta.feetPerPixel + meta.margin,
     y: (imageY - meta.minY) * meta.feetPerPixel + meta.margin,
@@ -1886,6 +1989,7 @@ export function sanitizePlanWithMasks(
   width: number,
   height: number,
   transform: ImageTransform,
+  classRoles?: Record<number, VisionClassRole>,
 ) {
   const meta = plan.meta;
   const plane = width * height;
@@ -1894,7 +1998,7 @@ export function sanitizePlanWithMasks(
   const windowMask = new Uint8Array(plane);
 
   for (let channel = 0; channel < channels; channel += 1) {
-    const role = segClassRole(channel, channels);
+    const role = segClassRole(channel, channels, classRoles);
     if (!role) continue;
     const target =
       role === "wall" ? wallMask : role === "door" ? doorMask : windowMask;
@@ -1927,10 +2031,18 @@ export function sanitizePlanWithMasks(
 
   for (const component of collectMaskComponents(missing, width, height, 40)) {
     for (const segment of maskToSegments(component, width, height)) {
+      const alongScale =
+        segment.orientation === "h"
+          ? scaleX(transform)
+          : scaleY(transform);
+      const acrossScale =
+        segment.orientation === "h"
+          ? scaleY(transform)
+          : scaleX(transform);
       const lengthFeet =
-        ((segment.end - segment.start) / transform.scale) * meta.feetPerPixel;
+        ((segment.end - segment.start) / alongScale) * meta.feetPerPixel;
       const thicknessFeet =
-        (segment.thickness / transform.scale) * meta.feetPerPixel;
+        (segment.thickness / acrossScale) * meta.feetPerPixel;
       if (
         lengthFeet < 0.75 ||
         thicknessFeet < MIN_WALL_THICKNESS_FEET ||
@@ -1977,7 +2089,7 @@ export function sanitizePlanWithMasks(
   const pixelOpenings: PixelOpening[] = [];
   const minArea = Math.max(24, Math.round(width * height * 0.00015));
   for (let channel = 0; channel < channels; channel += 1) {
-    const role = segClassRole(channel, channels);
+    const role = segClassRole(channel, channels, classRoles);
     if (role !== "door" && role !== "window") continue;
     const mask = role === "door" ? doorMask : windowMask;
     for (const component of componentBoxes(
@@ -2045,6 +2157,7 @@ export function processVisionOutputs(
   options?: {
     debug?: VisionExtractionOptions["debug"];
     signal?: AbortSignal;
+    classRoles?: Record<number, VisionClassRole>;
   },
 ): ProcessedVisionOutputs {
   let segments: PixelSegment[] = [];
@@ -2108,6 +2221,7 @@ export function processVisionOutputs(
         segmentation.height,
         transform,
         options?.signal,
+        options?.classRoles,
       );
       // Reference classes come from the raw argmax (the same map the colored
       // overlay shows); the confidence-filtered masks are only used to build
@@ -2127,7 +2241,11 @@ export function processVisionOutputs(
       const wallMask = new Uint8Array(plane);
       const openingMask = new Uint8Array(plane);
       for (let channel = 0; channel < segmentation.channels; channel += 1) {
-        const role = segClassRole(channel, segmentation.channels);
+        const role = segClassRole(
+          channel,
+          segmentation.channels,
+          options?.classRoles,
+        );
         if (!role) continue;
         const target = role === "wall" ? wallMask : openingMask;
         const mask = rawMasks[channel];
@@ -2185,6 +2303,7 @@ export function processVisionOutputs(
       referenceWidth,
       referenceHeight,
       transform,
+      options?.classRoles,
     );
     emitDebug(options?.debug, {
       stage: "planSanitize",
@@ -2232,11 +2351,13 @@ async function onnxExtraction(
   const ort = await loadOrt();
   const session = await loadSession(options.signal);
   throwIfAborted(options.signal);
+  const config = resolveVisionModelConfig();
 
   const image = await loadImageFromFile(file);
   const { tensor, transform } = await buildInputTensor(
     image,
     ort,
+    config,
     options.signal,
   );
   const inputName = session.inputNames[0];
@@ -2267,6 +2388,7 @@ async function onnxExtraction(
   const { plan } = processVisionOutputs(outputMap, transform, feetPerPixel, {
     debug: options.debug,
     signal: options.signal,
+    classRoles: config.classRoles,
   });
 
   return {
