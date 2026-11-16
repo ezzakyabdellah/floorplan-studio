@@ -1005,7 +1005,7 @@ export function Canvas2D() {
         ? "Click a wall to place a 3 ft door"
         : activeTool === "window"
           ? "Click a wall to place a 4 ft window"
-          : "Click a wall or opening to select · Delete to remove";
+          : "Click a wall, opening or furniture · drag furniture to move · Delete to remove";
 
   return (
     <div ref={containerRef} className="relative h-full w-full overflow-hidden">

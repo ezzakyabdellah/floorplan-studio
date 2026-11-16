@@ -239,7 +239,7 @@ function Inspector() {
         </div>
 
         <p className="rounded-lg border border-line/70 bg-black/20 p-2.5 text-[10px] leading-relaxed text-slate-500">
-          Drag the piece on the 2D plan to reposition it. The 3D view updates immediately.
+          Drag the piece in either canvas to move it. The other view updates immediately.
         </p>
 
         <button
@@ -453,6 +453,8 @@ function Inspector() {
 
 function FurnitureLibrary() {
   const walls = useFloorPlanStore((state) => state.walls);
+  const furnitureScaleFactor = useFloorPlanStore((state) => state.furnitureScaleFactor);
+  const setFurnitureScaleFactor = useFloorPlanStore((state) => state.setFurnitureScaleFactor);
   const addFurniture = useFloorPlanStore((state) => state.addFurniture);
   const setActiveView = useFloorPlanStore((state) => state.setActiveView);
   const categories = [...new Set(FURNITURE_CATALOG.map((item) => item.category))];
@@ -476,6 +478,20 @@ function FurnitureLibrary() {
       <p className="px-1 text-[10px] leading-relaxed text-slate-500">
         Drag a piece onto either canvas, or use + to add it at the plan center.
       </p>
+      <div className="space-y-1.5 rounded-lg border border-line/70 bg-black/20 p-2.5">
+        <NumberField
+          label="Scale all furniture"
+          value={furnitureScaleFactor * 100}
+          unit="%"
+          min={10}
+          max={300}
+          step={5}
+          onChange={(value) => setFurnitureScaleFactor(value / 100)}
+        />
+        <p className="text-[9px] leading-relaxed text-slate-600">
+          Resizes current furniture and applies to new pieces. 100% is the default.
+        </p>
+      </div>
       {categories.map((category) => (
         <div key={category} className="space-y-1">
           <p className="px-1 pt-1 text-[9px] font-medium uppercase tracking-[0.12em] text-slate-600">
@@ -681,6 +697,7 @@ function TopBar({
   const walls = useFloorPlanStore((state) => state.walls);
   const openings = useFloorPlanStore((state) => state.openings);
   const furniture = useFloorPlanStore((state) => state.furniture);
+  const furnitureScaleFactor = useFloorPlanStore((state) => state.furnitureScaleFactor);
   const sceneName = useFloorPlanStore((state) => state.sceneName);
   const loadScene = useFloorPlanStore((state) => state.loadScene);
   const resetScene = useFloorPlanStore((state) => state.resetScene);
@@ -717,7 +734,7 @@ function TopBar({
           .replace(/[^a-z0-9]+/g, "-")
           .replace(/^-|-$/g, "") || "floorplan";
       const path = await saveSceneFile(
-        buildSceneFile(walls, openings, sceneName, furniture),
+        buildSceneFile(walls, openings, sceneName, furniture, furnitureScaleFactor),
         `${slug}.json`,
       );
       if (path) notify(`Exported to ${path}`, "success");

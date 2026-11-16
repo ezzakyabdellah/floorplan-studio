@@ -62,6 +62,7 @@ export type SceneFile = {
   walls: Wall[];
   openings: Opening[];
   furniture?: Furniture[];
+  furnitureScaleFactor?: number;
 };
 
 export const DEFAULTS = {

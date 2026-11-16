@@ -9,7 +9,7 @@ The pack is CC0 1.0 Universal; the original license is included as `LICENSE.txt`
 - License: https://creativecommons.org/publicdomain/zero/1.0/
 
 Selected GLTF models and their `.bin` buffers are stored beside the shared
-`furniturebits_texture.png` atlas in `kaykit/`. The wardrobe remains a custom
-low-poly mesh because the free pack has no closet model. Imported objects are
-scaled uniformly to preserve their proportions; catalog dimensions still drive
-placement, selection, and clearance behavior.
+`furniturebits_texture.png` atlas in `kaykit/`. The wardrobe and TV console
+remain custom low-poly meshes because the free pack has no close matches.
+Imported objects are scaled uniformly to preserve their proportions; catalog
+dimensions still drive placement, selection, and clearance behavior.

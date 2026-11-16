@@ -5,6 +5,7 @@ import type { ThreeEvent } from "@react-three/fiber";
 import type { Furniture } from "../../types/floorplan";
 import { useFloorPlanStore } from "../../store/floorPlanStore";
 import { furnitureCatalogItem } from "../../data/furnitureCatalog";
+import { uniformFurnitureModelScale } from "../../utils/furnitureScale";
 
 const groundPlane = new Plane(new Vector3(0, 1, 0), 0);
 
@@ -201,11 +202,11 @@ function ImportedFurnitureAsset({
       y: Math.max(size.y, 0.001),
       z: Math.max(size.z, 0.001),
     };
-    const uniformScale = Math.min(
-      width / safeSize.x,
-      height / safeSize.y,
-      depth / safeSize.z,
-    );
+    const uniformScale = uniformFurnitureModelScale(safeSize, {
+      x: width,
+      y: height,
+      z: depth,
+    });
     const scale: [number, number, number] = [uniformScale, uniformScale, uniformScale];
     const position: [number, number, number] = [
       -center.x * scale[0],

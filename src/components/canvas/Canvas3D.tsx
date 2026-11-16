@@ -324,7 +324,7 @@ export function Canvas3D() {
 
       <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 rounded-lg border border-line glass px-2.5 py-1.5 text-[9px] text-slate-500 shadow-lg shadow-black/30">
         <Move3D className="h-3.5 w-3.5 text-slate-400" />
-        <span>Left-drag orbit</span>
+        <span>Left-drag orbit · drag furniture to move</span>
         <span className="h-3 w-px bg-line" />
         <span>Scroll zoom</span>
         <span className="h-3 w-px bg-line" />

@@ -1,5 +1,6 @@
 import type { Furniture, FurnitureKind, Opening, Wall } from "../types/floorplan";
 import { furnitureCatalogItem } from "../data/furnitureCatalog";
+import { scaleFurnitureToWalls } from "../utils/furnitureScale";
 import { pointAtDistance, wallLength } from "../utils/geometry";
 import {
   DEFAULT_AI_MODELS,
@@ -264,8 +265,12 @@ export async function generateFurnitureLayoutWithAI(
 ): Promise<FurnitureAssistanceResult> {
   const status = await checkOllamaStatus(options.signal);
   if (!status.online || status.models.length === 0) {
+    const geometryPlan = suggestFurnitureLayout(walls, openings);
     return {
-      plan: suggestFurnitureLayout(walls, openings),
+      plan: {
+        ...geometryPlan,
+        furniture: scaleFurnitureToWalls(geometryPlan.furniture, walls),
+      },
       mode: "geometry",
       note: "Ollama is offline; used the local geometry-based room guess.",
     };
@@ -283,15 +288,23 @@ export async function generateFurnitureLayoutWithAI(
       ...options,
       model,
     });
+    const scaledPlan = {
+      ...plan,
+      furniture: scaleFurnitureToWalls(plan.furniture, walls),
+    };
     return {
-      plan,
+      plan: scaledPlan,
       mode: "local-llm",
       model,
-      note: `Ollama ${model} suggested ${plan.furniture.length} placements; room, wall, and door clearances were checked locally.`,
+      note: `Ollama ${model} suggested ${scaledPlan.furniture.length} placements; room, wall, and door clearances were checked locally.`,
     };
   } catch (error) {
+    const geometryPlan = suggestFurnitureLayout(walls, openings);
     return {
-      plan: suggestFurnitureLayout(walls, openings),
+      plan: {
+        ...geometryPlan,
+        furniture: scaleFurnitureToWalls(geometryPlan.furniture, walls),
+      },
       mode: "geometry",
       model,
       note: `Ollama could not return a safe layout; used the local geometry-based guess${error instanceof Error ? ` (${error.message})` : ""}.`,

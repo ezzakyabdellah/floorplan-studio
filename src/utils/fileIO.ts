@@ -6,6 +6,7 @@ import type {
   SceneFile,
   Wall,
 } from "../types/floorplan";
+import { normalizeFurnitureScaleFactor } from "./furnitureScale";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -25,6 +26,7 @@ export function buildSceneFile(
   openings: Opening[],
   name: string,
   furniture: Furniture[] = [],
+  furnitureScaleFactor = 1,
 ): SceneFile {
   return {
     version: 1,
@@ -32,6 +34,7 @@ export function buildSceneFile(
     walls: walls.map((wall) => ({ ...wall })),
     openings: openings.map((opening) => ({ ...opening })),
     furniture: furniture.map((item) => ({ ...item })),
+    furnitureScaleFactor: normalizeFurnitureScaleFactor(furnitureScaleFactor),
   };
 }
 
@@ -172,6 +175,9 @@ export function parseSceneFile(raw: string): SceneFile {
     walls,
     openings,
     furniture,
+    furnitureScaleFactor: normalizeFurnitureScaleFactor(
+      finiteNumber(parsed.furnitureScaleFactor, 1),
+    ),
   };
 }
 

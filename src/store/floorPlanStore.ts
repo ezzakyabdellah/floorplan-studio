@@ -11,6 +11,25 @@ import {
   type Wall,
 } from "../types/floorplan";
 import { furnitureCatalogItem } from "../data/furnitureCatalog";
+import {
+  getFurnitureScaleFromWalls,
+  normalizeFurnitureScaleFactor,
+  scaleFurnitureByFactor,
+} from "../utils/furnitureScale";
+
+const FURNITURE_SCALE_STORAGE_KEY = "floorplan-studio:furniture-scale-factor";
+
+function readFurnitureScaleFactor() {
+  try {
+    if (typeof localStorage === "undefined") return 1;
+    const value = localStorage.getItem(FURNITURE_SCALE_STORAGE_KEY);
+    if (value === null) return 1;
+    const stored = Number(value);
+    return normalizeFurnitureScaleFactor(stored);
+  } catch {
+    return 1;
+  }
+}
 
 const createId = () => {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -81,6 +100,7 @@ type FloorPlanState = {
   walls: Wall[];
   openings: Opening[];
   furniture: Furniture[];
+  furnitureScaleFactor: number;
   activeView: ActiveView;
   activeTool: ActiveTool;
   selectedWallId: string | null;
@@ -120,6 +140,7 @@ type FloorPlanState = {
   updateOpening: (id: string, patch: Partial<Omit<Opening, "id">>) => void;
   deleteOpening: (id: string) => void;
   setFurniture: (furniture: Furniture[]) => void;
+  setFurnitureScaleFactor: (factor: number) => void;
   addFurniture: (kind: FurnitureKind, x: number, y: number) => string;
   updateFurniture: (id: string, patch: Partial<Omit<Furniture, "id">>) => void;
   deleteFurniture: (id: string) => void;
@@ -138,6 +159,7 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
   walls: initialScene.walls,
   openings: initialScene.openings,
   furniture: [],
+  furnitureScaleFactor: readFurnitureScaleFactor(),
   activeView: "2d",
   activeTool: "select",
   selectedWallId: null,
@@ -291,14 +313,36 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
 
   setFurniture: (furniture) =>
     set((state) => ({
-      furniture,
+      furniture: scaleFurnitureByFactor(furniture, state.furnitureScaleFactor),
       selectedFurnitureId: furniture.some((item) => item.id === state.selectedFurnitureId)
         ? state.selectedFurnitureId
         : null,
     })),
 
+  setFurnitureScaleFactor: (factor) => {
+    const nextFactor = normalizeFurnitureScaleFactor(factor);
+    const previousFactor = get().furnitureScaleFactor;
+    if (nextFactor === previousFactor) return;
+
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(FURNITURE_SCALE_STORAGE_KEY, String(nextFactor));
+      }
+    } catch {
+      // Keep the in-memory setting usable when browser storage is unavailable.
+    }
+
+    const ratio = nextFactor / previousFactor;
+    set((state) => ({
+      furnitureScaleFactor: nextFactor,
+      furniture: scaleFurnitureByFactor(state.furniture, ratio),
+    }));
+  },
+
   addFurniture: (kind, x, y) => {
     const catalogItem = furnitureCatalogItem(kind);
+    const state = get();
+    const scale = getFurnitureScaleFromWalls(state.walls) * state.furnitureScaleFactor;
     const id = createId();
     const item: Furniture = {
       id,
@@ -308,9 +352,9 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
       roomLabel: "Manual placement",
       x,
       y,
-      width: catalogItem.width,
-      depth: catalogItem.depth,
-      height: catalogItem.height,
+      width: catalogItem.width * scale,
+      depth: catalogItem.depth * scale,
+      height: catalogItem.height * scale,
       rotation: 0,
       confidence: 1,
     };
@@ -378,7 +422,11 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
     set((state) => ({
       walls: scene.walls,
       openings: scene.openings,
-      furniture: scene.furniture ?? [],
+      furniture: scaleFurnitureByFactor(
+        scene.furniture ?? [],
+        state.furnitureScaleFactor /
+          normalizeFurnitureScaleFactor(scene.furnitureScaleFactor ?? 1),
+      ),
       sceneName: scene.name ?? "Imported Floor Plan",
       selectedWallId: null,
       selectedOpeningId: null,
