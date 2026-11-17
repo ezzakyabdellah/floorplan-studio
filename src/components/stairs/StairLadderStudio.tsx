@@ -36,6 +36,7 @@ import type {
 } from "../../engineering/types";
 import { cn } from "../../utils/cn";
 import { WorkshopDrawings } from "./WorkshopDrawings";
+import { Stair3DViewport } from "./Stair3DViewport";
 import {
   exportAiLog,
   getAiLogLocation,
@@ -208,9 +209,9 @@ function RampConverter({ units }: { units: EngineeringUnits }) {
 }
 
 export function StairLadderStudio({ onBack }: Props) {
-  const [activeTab, setActiveTab] = useState<"calculator" | "drawings">(
-    "calculator",
-  );
+  const [activeTab, setActiveTab] = useState<
+    "calculator" | "model" | "drawings"
+  >("calculator");
   const projectType = useProjectStore((state) => state.projectType);
   const units = useProjectStore((state) => state.units);
   const stairParams = useProjectStore((state) => state.stairParams);
@@ -383,13 +384,14 @@ export function StairLadderStudio({ onBack }: Props) {
             Stairs &amp; Ladders
           </h1>
           <p className="text-[10px] text-slate-500">
-            Deterministic engineering · Phase 2
+            Engineering studio · Phase 3
           </p>
         </div>
         <nav className="ml-5 flex items-center rounded-lg border border-line bg-black/20 p-0.5">
           {(
             [
               ["calculator", "Calculator"],
+              ["model", "3D model"],
               ["drawings", "Shop drawings"],
             ] as const
           ).map(([tab, label]) => (
@@ -438,7 +440,9 @@ export function StairLadderStudio({ onBack }: Props) {
 
       <div className="flex min-h-0 flex-1">
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          {activeTab === "drawings" ? (
+          {activeTab === "model" ? (
+            <Stair3DViewport />
+          ) : activeTab === "drawings" ? (
             <WorkshopDrawings status={status} model={model} />
           ) : (
           <div className="min-h-0 flex-1 overflow-y-auto p-4 lg:p-6">
