@@ -13,6 +13,7 @@ export type StairParameters = {
   landingLength: number;
   spiralRadius: number;
   spiralTurns: number;
+  railingRunOverride: number | null;
   treadThickness: number;
   riserThickness: number;
   nosing: number;
@@ -48,6 +49,7 @@ export type CalculatedMetrics = {
   ladderSectionCount: number;
   balusterCount: number;
   balusterClearGap: number;
+  balusterRailRun: number;
   codeCompliant: boolean;
 };
 

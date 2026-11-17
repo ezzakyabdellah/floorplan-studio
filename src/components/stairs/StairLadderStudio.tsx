@@ -612,7 +612,7 @@ export function StairLadderStudio({ onBack }: Props) {
                           <Metric label="Walking-line development" value={format(metrics.totalWalkingRun)} note={`${stairParams.spiralTurns} turn${stairParams.spiralTurns === 1 ? "" : "s"} at centerline radius`} />
                         ) : null}
                         <Metric label="Plumb / level cuts" value={`${metrics.plumbCutAngleDegrees}° / ${metrics.levelCutAngleDegrees}°`} />
-                        <Metric label="Balusters" value={`${metrics.balusterCount}`} note={`${format(metrics.balusterClearGap)} clear gap along total run`} />
+                        <Metric label="Balusters" value={`${metrics.balusterCount}`} note={`${format(metrics.balusterClearGap)} max clear gap along ${format(metrics.balusterRailRun)} railing`} />
                         <Metric label="Measured headroom" value={format(metrics.headroomClearance)} />
                       </>
                     ) : (

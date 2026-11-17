@@ -1,5 +1,6 @@
 import { roundLength } from "./units";
-import type { EngineeringUnits } from "./types";
+import { calculateStairGeometry } from "./stairCalculations";
+import type { EngineeringUnits, StairParameters } from "./types";
 
 export type BalusterLayout = {
   balusterCount: number;
@@ -11,6 +12,43 @@ export type BalusterLayout = {
 
 export function maximumGuardOpening(units: EngineeringUnits): number {
   return units === "imperial" ? 4 : 100;
+}
+
+/** One rail path through the stair profile, including its intermediate landing. */
+export function calculateRailingRun(
+  params: StairParameters,
+  units: EngineeringUnits,
+): number {
+  if (params.railingRunOverride !== null) {
+    return roundLength(params.railingRunOverride, units);
+  }
+
+  const geometry = calculateStairGeometry(params, units);
+  if (
+    (params.style !== "l-shaped" && params.style !== "u-shaped") ||
+    geometry.treadCount < 2
+  ) {
+    return geometry.stringerLength;
+  }
+
+  const firstRisers = Math.ceil(geometry.stepCount / 2);
+  const secondRisers = geometry.stepCount - firstRisers;
+  const firstTreads = Math.ceil(geometry.treadCount / 2);
+  const secondTreads = geometry.treadCount - firstTreads;
+  const firstRun =
+    (geometry.totalWalkingRun * firstTreads) / geometry.treadCount;
+  const secondRun =
+    (geometry.totalWalkingRun * secondTreads) / geometry.treadCount;
+  const firstRise =
+    (params.totalRise * firstRisers) / geometry.stepCount;
+  const secondRise =
+    (params.totalRise * secondRisers) / geometry.stepCount;
+  return roundLength(
+    Math.hypot(firstRun, firstRise) +
+      Math.hypot(secondRun, secondRise) +
+      params.landingLength,
+    units,
+  );
 }
 
 /** Treats runLength as the measured rail length, including its end posts. */

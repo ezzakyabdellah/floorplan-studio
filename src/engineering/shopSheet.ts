@@ -1,4 +1,5 @@
 import { calculateLadderGeometry } from "./ladderCalculations";
+import { maximumGuardOpening } from "./railingCalculations";
 import { calculateStairGeometry } from "./stairCalculations";
 import { formatLength } from "./units";
 import type { ProjectState } from "./types";
@@ -625,6 +626,9 @@ function addFrontElevation(
   height: number,
 ) {
   const { stairParams, units } = project;
+  const balusterCount = project.calculatedMetrics.balusterCount;
+  const balusterClearGap = project.calculatedMetrics.balusterClearGap;
+  const balusterRailRun = project.calculatedMetrics.balusterRailRun;
   panel(
     commands,
     x,
@@ -644,7 +648,7 @@ function addFrontElevation(
   const stairWidth = stairParams.width * scale;
   const rise = stairParams.totalRise * scale;
   const left = x + (width - stairWidth) / 2;
-  const bottom = y + height - 32;
+  const bottom = y + height - 74;
   const top = bottom - rise;
   line(commands, left, bottom, left, top, INK, 2);
   line(commands, left + stairWidth, bottom, left + stairWidth, top, INK, 2);
@@ -658,7 +662,16 @@ function addFrontElevation(
     bottom + 15,
     `WIDTH ${formatLength(stairParams.width, units)}`,
   );
-  text(commands, x + 16, y + height - 10, "Stringer positions shown schematically; confirm framing and handrail design onsite.", 9, MUTED);
+  text(
+    commands,
+    x + 16,
+    y + height - 38,
+    `RAILING ${formatLength(balusterRailRun, units)} · ${balusterCount} BALUSTERS · ${formatLength(balusterClearGap, units)} CLEAR`,
+    8,
+    ACCENT,
+    "bold",
+  );
+  text(commands, x + 16, y + height - 17, "Schematic only · verify framing and guard details onsite.", 8.5, MUTED);
 }
 
 function addStringerNotch(
@@ -1079,6 +1092,7 @@ export function defaultWorkshopNotes(
       cuttingInstructions: [
         `Mark ${geometry.stepCount} riser positions over the full rise; average rise is ${geometry.unitRiseExact.toFixed(units === "imperial" ? 3 : 1)} ${units === "imperial" ? "in" : "mm"}.`,
         `Lay out ${geometry.treadCount} tread notches using the ${formatLength(geometry.unitRun, units)} unit run and ${geometry.pitchAngleDegrees}° pitch.`,
+        `Distribute ${project.calculatedMetrics.balusterCount} balusters evenly over the railing run; configured maximum is ${formatLength(stairParams.balusterSpacingMax, units)}, rule cap is ${formatLength(maximumGuardOpening(units), units)}, calculated gap is ${formatLength(project.calculatedMetrics.balusterClearGap, units)}.`,
         `Allow extra stringer stock for end cuts and bearing; the ${formatLength(geometry.stringerLength, units)} stringer line is a geometric reference, not a final blank length.`,
         `Prepare ${geometry.treadCount} tread blanks to the project width of ${formatLength(stairParams.width, units)}; confirm overhang and finish dimensions before cutting.`,
       ],

@@ -20,6 +20,7 @@ const STAIR_LENGTH_FIELDS = [
   "width",
   "landingLength",
   "spiralRadius",
+  "railingRunOverride",
   "treadThickness",
   "riserThickness",
   "nosing",
@@ -65,7 +66,12 @@ function normalizeStairPatch(
   const next = { ...current, ...patch };
   for (const field of STAIR_LENGTH_FIELDS) {
     const value = next[field];
-    if (field === "headroomClearance" && value === null) continue;
+    if (
+      (field === "headroomClearance" || field === "railingRunOverride") &&
+      value === null
+    ) {
+      continue;
+    }
     if (typeof value !== "number" || !Number.isFinite(value)) {
       throw new RangeError(`${field} must be a finite number.`);
     }

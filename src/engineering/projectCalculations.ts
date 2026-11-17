@@ -1,4 +1,7 @@
-import { calculateBalusterSpacing } from "./railingCalculations";
+import {
+  calculateBalusterSpacing,
+  calculateRailingRun,
+} from "./railingCalculations";
 import { calculateLadderGeometry } from "./ladderCalculations";
 import { calculateStairGeometry } from "./stairCalculations";
 import { maximumGuardOpening } from "./railingCalculations";
@@ -14,8 +17,12 @@ export function calculateProjectMetrics(
     project.units,
     project.ladderParams.ladderType,
   );
+  const balusterRailRun = calculateRailingRun(
+    project.stairParams,
+    project.units,
+  );
   const balusters = calculateBalusterSpacing(
-    stairs.totalWalkingRun,
+    balusterRailRun,
     Math.min(
       project.stairParams.balusterSpacingMax,
       maximumGuardOpening(project.units),
@@ -35,6 +42,7 @@ export function calculateProjectMetrics(
     ladderSectionCount: ladder.sectionCount,
     balusterCount: balusters.balusterCount,
     balusterClearGap: balusters.clearGap,
+    balusterRailRun,
     codeCompliant,
   };
 }

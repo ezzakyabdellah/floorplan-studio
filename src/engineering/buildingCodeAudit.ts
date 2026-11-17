@@ -1,4 +1,7 @@
-import { calculateBalusterSpacing } from "./railingCalculations";
+import {
+  calculateBalusterSpacing,
+  calculateRailingRun,
+} from "./railingCalculations";
 import { calculateLadderGeometry } from "./ladderCalculations";
 import { calculateStairGeometry } from "./stairCalculations";
 import { inchesToProjectUnits } from "./units";
@@ -31,8 +34,9 @@ function auditStaircase(project: ProjectState): AuditFinding[] {
   const minTread = inchesToProjectUnits(10, units);
   const minimumHeadroom = inchesToProjectUnits(80, units);
   const maxOpening = maximumGuardOpening(units);
+  const railingRun = calculateRailingRun(stairParams, units);
   const balusters = calculateBalusterSpacing(
-    metrics.totalWalkingRun,
+    railingRun,
     Math.min(stairParams.balusterSpacingMax, maxOpening),
     stairParams.balusterThickness,
     units,

@@ -32,6 +32,7 @@ const updateDesignParametersSchema = {
         landingLength: { type: "number" },
         spiralRadius: { type: "number" },
         spiralTurns: { type: "number" },
+        railingRunOverride: { type: ["number", "null"] },
         headroomCeilingHeight: { type: "number" },
         headroomClearance: { type: ["number", "null"] },
         balusterSpacingMax: { type: "number" },
@@ -123,7 +124,7 @@ function dimensionInProjectUnits(
 function inferDimensionTarget(
   before: string,
   after: string,
-): "totalRise" | "totalRun" | "width" | "workingHeight" | "headroomClearance" | "headroomCeilingHeight" | "balusterSpacingMax" | "landingLength" | "spiralRadius" | null {
+): "totalRise" | "totalRun" | "width" | "workingHeight" | "headroomClearance" | "headroomCeilingHeight" | "balusterSpacingMax" | "landingLength" | "spiralRadius" | "railingRunOverride" | null {
   const labels = [
     ["workingHeight", /\bworking\s+height\b|\bladder\s+height\b/gi],
     ["headroomClearance", /\bheadroom\b|\bclearance\b/gi],
@@ -131,6 +132,7 @@ function inferDimensionTarget(
     ["width", /\b(?:stair(?:case)?\s+)?width\b/gi],
     ["landingLength", /\blanding(?:\s+(?:length|size))?\b/gi],
     ["spiralRadius", /\bspiral\s+radius\b|\b(?:inner|outer)\s+radius\b/gi],
+    ["railingRunOverride", /\brailing\s+run\b|\bhandrail\s+length\b|\brail\s+length\b/gi],
     ["totalRun", /\bhallway\b|\bhorizontal\b|\btotal\s+run\b|\brun\b|\blength\b/gi],
     ["headroomCeilingHeight", /\bceiling\s+height\b/gi],
     ["totalRise", /\bfloor[- ]to[- ]floor\b|\btotal\s+rise\b|\brise\b|\bvertical\s+height\b|\bheight\b/gi],
@@ -300,6 +302,7 @@ function sanitizeToolCall(call: DesignToolCall): DesignToolCall {
     "width",
     "landingLength",
     "spiralRadius",
+    "railingRunOverride",
     "headroomCeilingHeight",
     "headroomClearance",
     "balusterSpacingMax",
@@ -307,7 +310,8 @@ function sanitizeToolCall(call: DesignToolCall): DesignToolCall {
     const value = stairSource[key];
     if (
       (typeof value === "number" && Number.isFinite(value)) ||
-      (key === "headroomClearance" && value === null)
+      ((key === "headroomClearance" || key === "railingRunOverride") &&
+        value === null)
     ) {
       (stairParams as Record<string, number | null>)[key] = value as
         | number

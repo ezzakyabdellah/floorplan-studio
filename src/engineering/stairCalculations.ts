@@ -93,6 +93,7 @@ export function defaultStairParameters(
     landingLength: length(36),
     spiralRadius: length(36),
     spiralTurns: 1,
+    railingRunOverride: null,
     treadThickness: length(1.5),
     riserThickness: length(0.75),
     nosing: length(1),
