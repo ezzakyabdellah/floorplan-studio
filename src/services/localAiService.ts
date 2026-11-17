@@ -235,7 +235,7 @@ export async function generateLocalJson(
         prompt,
         stream: false,
         format,
-        options: { temperature: 0.1, num_predict: 128, num_ctx: 4096 },
+        options: { temperature: 0.1, num_predict: 512, num_ctx: 4096 },
       }),
       signal: controller.signal,
     });

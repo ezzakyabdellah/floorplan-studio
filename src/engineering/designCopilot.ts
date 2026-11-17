@@ -1,7 +1,11 @@
 import { generateLocalJson, type StreamOptions } from "../services/localAiService";
 import { logAiError } from "../services/aiLog";
 import { runBuildingCodeAudit } from "./buildingCodeAudit";
-import { feetToProjectUnits, inchesToProjectUnits } from "./units";
+import {
+  feetToProjectUnits,
+  formatLength,
+  inchesToProjectUnits,
+} from "./units";
 import type {
   AuditReport,
   EngineeringUnits,
@@ -10,53 +14,55 @@ import type {
   StairStyle,
 } from "./types";
 
+const updateDesignParametersSchema = {
+  type: "object",
+  properties: {
+    projectType: { type: "string", enum: ["staircase", "ladder"] },
+    units: { type: "string", enum: ["imperial", "metric"] },
+    stairParams: {
+      type: "object",
+      properties: {
+        style: {
+          type: "string",
+          enum: ["straight", "l-shaped", "u-shaped", "spiral"],
+        },
+        totalRise: { type: "number" },
+        totalRun: { type: "number" },
+        width: { type: "number" },
+        landingLength: { type: "number" },
+        spiralRadius: { type: "number" },
+        spiralTurns: { type: "number" },
+        headroomCeilingHeight: { type: "number" },
+        headroomClearance: { type: ["number", "null"] },
+        balusterSpacingMax: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+    ladderParams: {
+      type: "object",
+      properties: {
+        workingHeight: { type: "number" },
+        ladderType: {
+          type: "string",
+          enum: ["extension", "single", "step"],
+        },
+        surfaceType: {
+          type: "string",
+          enum: ["concrete", "wood", "soil", "other"],
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  additionalProperties: false,
+} as const;
+
 export const DESIGN_TOOL_SCHEMAS = [
   {
     name: "updateDesignParameters",
     description:
       "Apply explicitly requested staircase or ladder design parameters. Never calculate geometry or code compliance.",
-    parameters: {
-      type: "object",
-      properties: {
-        projectType: { type: "string", enum: ["staircase", "ladder"] },
-        units: { type: "string", enum: ["imperial", "metric"] },
-        stairParams: {
-          type: "object",
-          properties: {
-            style: {
-              type: "string",
-              enum: ["straight", "l-shaped", "u-shaped", "spiral"],
-            },
-            totalRise: { type: "number" },
-            totalRun: { type: "number" },
-            width: { type: "number" },
-            landingLength: { type: "number" },
-            spiralRadius: { type: "number" },
-            spiralTurns: { type: "number" },
-            headroomCeilingHeight: { type: "number" },
-            headroomClearance: { type: ["number", "null"] },
-            balusterSpacingMax: { type: "number" },
-          },
-          additionalProperties: false,
-        },
-        ladderParams: {
-          type: "object",
-          properties: {
-            workingHeight: { type: "number" },
-            ladderType: {
-              type: "string",
-              enum: ["extension", "single", "step"],
-            },
-            surfaceType: {
-              type: "string",
-              enum: ["concrete", "wood", "soil", "other"],
-            },
-          },
-          additionalProperties: false,
-        },
-      },
-      additionalProperties: false,
-    },
+    parameters: updateDesignParametersSchema,
   },
   {
     name: "auditBuildingCode",
@@ -78,7 +84,7 @@ type CopilotResult = {
 };
 
 const DIMENSION =
-  /(\d+\s+\d+\s*\/\s*\d+|\d+\s*\/\s*\d+|\d+(?:\.\d+)?)\s*(?:-\s*)?(inches?|in|mm|millimeters?|cm|centimeters?|ft|feet|foot|')/gi;
+  /(\d+\s+\d+\s*\/\s*\d+|\d+\s*\/\s*\d+|\d+(?:\.\d+)?)\s*(?:-\s*)?(millimeters?|mm|centimeters?|cm|meters?|m|inches?|in|feet|foot|ft|')/gi;
 
 function parseNumber(value: string): number {
   const mixed = value.match(/^(\d+)\s+(\d+)\s*\/\s*(\d+)$/);
@@ -106,6 +112,8 @@ function dimensionInProjectUnits(
         ? value / 25.4
         : normalized.startsWith("cm")
           ? value / 2.54
+          : normalized === "m" || normalized.startsWith("meter")
+            ? (value * 1000) / 25.4
           : value;
   return projectUnits === "imperial"
     ? inchesToProjectUnits(inches, "imperial")
@@ -125,7 +133,7 @@ function inferDimensionTarget(
     ["spiralRadius", /\bspiral\s+radius\b|\b(?:inner|outer)\s+radius\b/gi],
     ["totalRun", /\bhallway\b|\bhorizontal\b|\btotal\s+run\b|\brun\b|\blength\b/gi],
     ["headroomCeilingHeight", /\bceiling\s+height\b/gi],
-    ["totalRise", /\bfloor[- ]to[- ]floor\b|\btotal\s+rise\b|\brise\b|\bvertical\s+height\b/gi],
+    ["totalRise", /\bfloor[- ]to[- ]floor\b|\btotal\s+rise\b|\brise\b|\bvertical\s+height\b|\bheight\b/gi],
   ] as const;
   let closest:
     | {
@@ -352,7 +360,7 @@ function responseFormat() {
         type: "string",
         enum: ["updateDesignParameters", "auditBuildingCode"],
       },
-      arguments: { type: "object" },
+      arguments: updateDesignParametersSchema,
       message: { type: "string" },
     },
     required: ["tool", "arguments", "message"],
@@ -364,13 +372,16 @@ export async function requestDesignToolCall(
   state: ProjectState,
   options: StreamOptions = {},
 ): Promise<{ toolCall: DesignToolCall; message: string }> {
+  const explicitPatch = parseOfflineDesignRequest(request, state);
+  const responseUnits = explicitPatch?.units ?? state.units;
+  const responseUnitLabel = responseUnits === "metric" ? "mm" : "in";
   const schemas = DESIGN_TOOL_SCHEMAS.map((tool) => JSON.stringify(tool)).join("\n");
   const raw = await generateLocalJson(
     [
       "You are a parameter-extraction copilot for a stair and ladder calculator.",
       "Return only the JSON schema requested. Do not calculate geometry, safety, code compliance, angles, or dimensions.",
       `Available function tools:\n${schemas}`,
-      `Current units: ${state.units}. Dimensions in tool arguments must use these units (inches for imperial, mm for metric).`,
+      `Selected output unit: ${responseUnitLabel}. Express every dimension in tool arguments and in the message using only ${responseUnitLabel}. Convert input measurements to this unit first; do not use any other units in the response.`,
       "Only include parameter values explicitly requested or unambiguously stated by the user. Use auditBuildingCode if the user asks for a code/safety audit.",
       `User request: ${request}`,
     ].join("\n\n"),
@@ -387,8 +398,16 @@ export async function requestDesignToolCall(
     if (!isValidToolCall(toolCall)) {
       throw new Error("The local model returned an invalid design tool call.");
     }
+    const sanitizedToolCall = sanitizeToolCall(toolCall);
+    if (sanitizedToolCall.tool === "updateDesignParameters") {
+      sanitizedToolCall.arguments = constrainToExplicitRequest(
+        sanitizedToolCall.arguments,
+        explicitPatch,
+        request,
+      );
+    }
     return {
-      toolCall: sanitizeToolCall(toolCall),
+      toolCall: sanitizedToolCall,
       message:
         typeof parsed.message === "string" && parsed.message.trim()
           ? parsed.message.trim()
@@ -402,6 +421,89 @@ export async function requestDesignToolCall(
     );
     throw error;
   }
+}
+
+function constrainToExplicitRequest(
+  modelPatch: ProjectParametersPatch,
+  explicitPatch: ProjectParametersPatch | null,
+  request: string,
+): ProjectParametersPatch {
+  if (explicitPatch) {
+    const result: ProjectParametersPatch = { ...explicitPatch };
+    if (
+      !result.projectType &&
+      /\b(?:stair(?:case)?|ladder)\b/i.test(request)
+    ) {
+      result.projectType = modelPatch.projectType;
+    }
+    if (!result.units && /\b(?:metric|imperial)\b/i.test(request)) {
+      result.units = modelPatch.units;
+    }
+    const modelStyle = modelPatch.stairParams?.style;
+    if (
+      !result.stairParams?.style &&
+      modelStyle
+    ) {
+      result.stairParams = {
+        ...result.stairParams,
+        style: modelStyle,
+      };
+    }
+    return result;
+  }
+
+  // The model sometimes emits zero-filled defaults for fields the user never
+  // mentioned. Zero is invalid for all design dimensions except measured
+  // headroom, but even that should not be inferred without an explicit request.
+  const stairParams = modelPatch.stairParams
+    ? Object.fromEntries(
+        Object.entries(modelPatch.stairParams).filter(
+          ([, value]) => typeof value !== "number" || value !== 0,
+        ),
+      )
+    : undefined;
+  const ladderParams = modelPatch.ladderParams
+    ? Object.fromEntries(
+        Object.entries(modelPatch.ladderParams).filter(
+          ([, value]) => typeof value !== "number" || value !== 0,
+        ),
+      )
+    : undefined;
+  return {
+    ...modelPatch,
+    ...(stairParams ? { stairParams } : {}),
+    ...(ladderParams ? { ladderParams } : {}),
+  };
+}
+
+export function formatDesignPatchSummary(
+  patch: ProjectParametersPatch | undefined,
+  units: EngineeringUnits,
+): string {
+  const dimensions: string[] = [];
+  const stairDimensions = [
+    ["totalRise", "total rise"],
+    ["totalRun", "total run"],
+    ["width", "stair width"],
+    ["landingLength", "landing length"],
+    ["spiralRadius", "spiral radius"],
+    ["headroomCeilingHeight", "ceiling height"],
+    ["headroomClearance", "headroom clearance"],
+    ["balusterSpacingMax", "maximum baluster spacing"],
+  ] as const;
+  for (const [key, label] of stairDimensions) {
+    const value = patch?.stairParams?.[key];
+    if (typeof value === "number") {
+      dimensions.push(`${label}: ${formatLength(value, units)}`);
+    }
+  }
+  const workingHeight = patch?.ladderParams?.workingHeight;
+  if (typeof workingHeight === "number") {
+    dimensions.push(`working height: ${formatLength(workingHeight, units)}`);
+  }
+  return dimensions.length > 0
+    ? `Updated ${dimensions.join("; ")}.`
+    : `Project dimensions are in ${units === "metric" ? "mm" : "in"}.`;
 }
 
 export async function runOfflineDesignRequest(

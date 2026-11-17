@@ -16,6 +16,7 @@ import {
   type OllamaStatus,
 } from "../../services/localAiService";
 import {
+  formatDesignPatchSummary,
   requestDesignToolCall,
   runOfflineDesignRequest,
   type CopilotResult,
@@ -312,8 +313,9 @@ export function StairLadderStudio({ onBack }: Props) {
       }
       if (result.patch) applyPatch(result.patch);
       if (result.audit) setReport(result.audit);
+      const responseUnits = useProjectStore.getState().units;
       setCopilotMessage(
-        `${result.response}\n\nSource: ${result.source === "local-model" ? `${model} via local Ollama` : "offline command parser"}.`,
+        `${result.response}\n\n${formatDesignPatchSummary(result.patch, responseUnits)}\n\nSource: ${result.source === "local-model" ? `${model} via local Ollama` : "offline command parser"}.`,
       );
     } catch (submitError) {
       if (status?.online) {
@@ -333,7 +335,7 @@ export function StairLadderStudio({ onBack }: Props) {
     const next = audit();
     setReport(next);
     setCopilotMessage(
-      `Deterministic audit: ${next.passCount} passed, ${next.failCount} failed, ${next.warningCount} warning${next.warningCount === 1 ? "" : "s"}. AI does not calculate these results.`,
+      `Deterministic audit: ${next.passCount} passed, ${next.failCount} failed, ${next.warningCount} warning${next.warningCount === 1 ? "" : "s"}. Project dimensions are in ${unitLabel}. AI does not calculate these results.`,
     );
   };
 
