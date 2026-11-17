@@ -33,6 +33,7 @@ import type {
   ProjectParametersPatch,
 } from "../../engineering/types";
 import { cn } from "../../utils/cn";
+import { WorkshopDrawings } from "./WorkshopDrawings";
 
 type Props = { onBack: () => void };
 
@@ -200,6 +201,9 @@ function RampConverter({ units }: { units: EngineeringUnits }) {
 }
 
 export function StairLadderStudio({ onBack }: Props) {
+  const [activeTab, setActiveTab] = useState<"calculator" | "drawings">(
+    "calculator",
+  );
   const projectType = useProjectStore((state) => state.projectType);
   const units = useProjectStore((state) => state.units);
   const stairParams = useProjectStore((state) => state.stairParams);
@@ -339,9 +343,32 @@ export function StairLadderStudio({ onBack }: Props) {
             Stairs &amp; Ladders
           </h1>
           <p className="text-[10px] text-slate-500">
-            Deterministic engineering · Phase 1
+            Deterministic engineering · Phase 2
           </p>
         </div>
+        <nav className="ml-5 flex items-center rounded-lg border border-line bg-black/20 p-0.5">
+          {(
+            [
+              ["calculator", "Calculator"],
+              ["drawings", "Shop drawings"],
+            ] as const
+          ).map(([tab, label]) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setActiveTab(tab)}
+              aria-pressed={activeTab === tab}
+              className={cn(
+                "rounded-md px-3 py-1.5 text-[10px] font-medium transition",
+                activeTab === tab
+                  ? "bg-accent/15 text-accent"
+                  : "text-slate-400 hover:text-slate-200",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
         <div className="ml-auto flex items-center gap-2">
           <span
             className={cn(
@@ -370,7 +397,11 @@ export function StairLadderStudio({ onBack }: Props) {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 lg:p-6">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          {activeTab === "drawings" ? (
+            <WorkshopDrawings status={status} model={model} />
+          ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto p-4 lg:p-6">
           <div className="mx-auto max-w-5xl space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -651,6 +682,8 @@ export function StairLadderStudio({ onBack }: Props) {
               </aside>
             </section>
           </div>
+          </div>
+          )}
         </main>
       </div>
     </div>
