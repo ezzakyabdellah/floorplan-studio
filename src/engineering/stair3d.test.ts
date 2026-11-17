@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createDefaultProjectState } from "./projectStore";
 import {
   buildLadder3DLayout,
+  buildSpiralStringerPath,
   buildStair3DLayout,
   calculateHeadroomProfile,
   estimateStairBoundsFromSketch,
@@ -90,6 +91,18 @@ describe("parametric stair 3D layout", () => {
     );
     expect(firstTreadStart.z).toBeCloseTo(
       firstWalkPoint.z * innerToCenterlineRatio,
+      6,
+    );
+    const innerStringer = buildSpiralStringerPath(layout, -layout.width / 2);
+    const outerStringer = buildSpiralStringerPath(layout, layout.width / 2);
+    expect(innerStringer).toHaveLength(layout.walkPath.length);
+    expect(innerStringer[0].y).toBeLessThan(layout.walkPath[0].y);
+    expect(Math.hypot(innerStringer[0].x, innerStringer[0].z)).toBeCloseTo(
+      layout.spiralTreads[0].innerRadius,
+      6,
+    );
+    expect(Math.hypot(outerStringer[0].x, outerStringer[0].z)).toBeCloseTo(
+      layout.spiralTreads[0].outerRadius,
       6,
     );
   });

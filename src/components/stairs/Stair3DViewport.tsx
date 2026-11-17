@@ -16,6 +16,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useProjectStore } from "../../engineering/projectStore";
 import {
   buildLadder3DLayout,
+  buildSpiralStringerPath,
   buildStair3DLayout,
   calculateHeadroomProfile,
   estimateStairBoundsFromSketch,
@@ -336,35 +337,22 @@ function CurveRail({
 }
 
 function SpiralStringers({ layout }: { layout: Stair3DLayout }) {
-  const beams = useMemo(
+  const stringerPaths = useMemo(
     () =>
-      [0, 1].flatMap((side) =>
-        layout.spiralTreads.map((tread) => {
-          const radius = side === 0 ? tread.innerRadius : tread.outerRadius;
-          const start = spiralPlanPoint(radius, tread.startAngle);
-          const end = spiralPlanPoint(radius, tread.endAngle);
-          return {
-            start: {
-              x: start.x,
-              y: tread.lowerElevation - 0.06,
-              z: start.z,
-            },
-            end: {
-              x: end.x,
-              y: tread.elevation - 0.06,
-              z: end.z,
-            },
-            radius: 0.1,
-            color: "#5b5144",
-          };
-        }),
+      [-layout.width / 2, layout.width / 2].map((offset) =>
+        buildSpiralStringerPath(layout, offset),
       ),
-    [layout.spiralTreads],
+    [layout],
   );
   return (
     <group>
-      {beams.map((beam, index) => (
-        <Beam key={`spiral-stringer-${index}`} beam={beam} />
+      {stringerPaths.map((points, index) => (
+        <CurveRail
+          key={`spiral-stringer-${index}`}
+          points={points}
+          color="#514235"
+          radius={0.12}
+        />
       ))}
     </group>
   );

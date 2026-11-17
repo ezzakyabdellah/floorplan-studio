@@ -52,6 +52,23 @@ export type Stair3DLayout = {
   style: ProjectState["stairParams"]["style"];
 };
 
+/** A continuous spiral stringer path offset radially below the baluster feet. */
+export function buildSpiralStringerPath(
+  layout: Stair3DLayout,
+  radialOffset = 0,
+  verticalOffset = 0.16,
+): Point3[] {
+  return layout.walkPath.map((point) => {
+    const radius = Math.hypot(point.x, point.z) || 1;
+    const scale = (radius + radialOffset) / radius;
+    return {
+      x: point.x * scale,
+      y: point.y - verticalOffset,
+      z: point.z * scale,
+    };
+  });
+}
+
 export function estimateStairBoundsFromSketch(
   walls: Wall[],
 ): { runFeet: number; widthFeet: number } {
