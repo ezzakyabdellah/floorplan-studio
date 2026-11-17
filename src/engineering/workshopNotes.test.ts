@@ -21,14 +21,14 @@ describe("workshop notes", () => {
   it("uses structured local model output for shop notes", async () => {
     const generated = {
       assemblyNotes: [
-        "Verify the supplied rise onsite before laying out.",
-        "Dry-fit one stringer before making the remaining cuts.",
+        "Verify the 108 in rise and 132 in run onsite before laying out.",
+        "Lay out 14 equal risers and 13 treads from the supplied metrics.",
         "Check bearing and attachments against the approved plan.",
       ],
       cuttingInstructions: [
-        "Mark the supplied riser count evenly over the measured rise.",
-        "Use the supplied unit run to lay out each tread notch.",
-        "Leave end-cut allowance and verify the stock length before cutting.",
+        "Mark 14 riser positions over the full rise; average rise is 7.714 in.",
+        "Lay out 13 tread notches using the 10 1/8 in unit run and 39.29 degree pitch.",
+        "Distribute 31 balusters with a 3 7/8 in clear gap.",
       ],
     };
     const requests: RequestInit[] = [];
@@ -48,7 +48,7 @@ describe("workshop notes", () => {
     });
     expect(notes).toEqual(generated);
     const body = JSON.parse(requests[0].body as string);
-    expect(body.prompt).toContain("do not calculate or repeat dimensions");
+    expect(body.prompt).toContain("rounded to at most three decimal places");
     expect(body.prompt).toContain("Deterministic calculated metrics");
     expect(body.format.type).toBe("object");
   });
@@ -62,6 +62,28 @@ describe("workshop notes", () => {
           response: JSON.stringify({
             assemblyNotes: ["ok", "ok", "ok"],
             cuttingInstructions: ["x".repeat(361), "ok", "ok"],
+          }),
+        }),
+      })),
+    );
+    await expect(
+      generateWorkshopNotes(createDefaultProjectState()),
+    ).rejects.toThrow("invalid cuttingInstructions");
+  });
+
+  it("rejects numeric claims that do not match project parameters or metrics", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          response: JSON.stringify({
+            assemblyNotes: ["Verify site measurements.", "Dry-fit the stringer.", "Check bearing."],
+            cuttingInstructions: [
+              "Cut the stringer at 42 degrees.",
+              "Use the dimension labels.",
+              "Verify all cuts before assembly.",
+            ],
           }),
         }),
       })),

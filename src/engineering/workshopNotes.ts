@@ -23,11 +23,44 @@ const notesSchema = {
   additionalProperties: false,
 };
 
-function validateWorkshopNotes(value: unknown): WorkshopNotes {
+const numericTokenPattern =
+  /\b\d+(?:\s+\d+\s*\/\s*\d+|\s*\/\s*\d+|(?:,\d{3})*(?:\.\d+)?)\b/g;
+
+function parseNumericToken(token: string): number {
+  const mixed = token.match(/^(\d+)\s+(\d+)\s*\/\s*(\d+)$/);
+  if (mixed) return Number(mixed[1]) + Number(mixed[2]) / Number(mixed[3]);
+  if (token.includes("/")) {
+    const [numerator, denominator] = token.split("/").map(Number);
+    return denominator ? numerator / denominator : Number.NaN;
+  }
+  return Number(token.replace(/,/g, ""));
+}
+
+function collectProjectNumbers(value: unknown, numbers = new Set<number>()) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    numbers.add(value);
+    // The UI and shop sheet display computed dimensions rounded to at most
+    // three decimal places; accept those exact display forms as verified data.
+    for (let precision = 1; precision <= 3; precision += 1) {
+      numbers.add(Number(value.toFixed(precision)));
+    }
+  } else if (Array.isArray(value)) {
+    value.forEach((item) => collectProjectNumbers(item, numbers));
+  } else if (value && typeof value === "object") {
+    Object.values(value).forEach((item) => collectProjectNumbers(item, numbers));
+  }
+  return numbers;
+}
+
+function validateWorkshopNotes(
+  value: unknown,
+  project: ProjectState,
+): WorkshopNotes {
   if (!value || typeof value !== "object") {
     throw new Error("The local model returned invalid workshop notes.");
   }
   const candidate = value as Record<string, unknown>;
+  const verifiedNumbers = collectProjectNumbers(project);
   const validateLines = (key: "assemblyNotes" | "cuttingInstructions") => {
     const lines = candidate[key];
     if (
@@ -39,7 +72,20 @@ function validateWorkshopNotes(value: unknown): WorkshopNotes {
           typeof line !== "string" ||
           line.trim().length === 0 ||
           line.length > 360 ||
-          /\d/.test(line),
+          /\b(?:IRC|IBC|OSHA|ANSI|ADA)\b/i.test(line) ||
+          [
+            ...line.matchAll(
+              new RegExp(numericTokenPattern.source, "g"),
+            ),
+          ].some((match) => {
+            const value = parseNumericToken(match[0]);
+            return (
+              !Number.isFinite(value) ||
+              ![...verifiedNumbers].some(
+                (verified) => Math.abs(verified - value) < 1e-9,
+              )
+            );
+          }),
       )
     ) {
       throw new Error(`The local model returned invalid ${key}.`);
@@ -59,8 +105,8 @@ export async function generateWorkshopNotes(
   const fallback = defaultWorkshopNotes(project);
   const prompt = [
     "You are a workshop note writer. Return concise assembly and cut-sequence notes as JSON.",
-    "Strict safety boundary: do not calculate or repeat dimensions, angles, counts, material capacities, or code compliance. Do not invent geometry. The deterministic sheet already labels all verified quantities; refer to those labels in your prose.",
-    "Do not include numerals, fractions, measurements, code citations, or numeric claims in generated note strings. If a step needs a quantity, direct the reader to the dimension labels on the sheet.",
+    "Strict safety boundary: do not calculate dimensions, angles, quantities, material capacities, or code compliance. Do not invent geometry.",
+    "You may repeat a numeric value only when it matches a supplied parameter or verified metric, including the same value rounded to at most three decimal places for display. Do not invent or further calculate numbers. Do not cite codes; refer readers to the drawing labels for measurements.",
     "Do not make claims that a design is compliant or structurally adequate. Tell the user to verify site dimensions, stock, connections, and local requirements.",
     "Use the supplied cut reference measurements as references only; do not present the stringer hypotenuse as a final stock blank length.",
     `Project type: ${project.projectType}`,
@@ -79,7 +125,7 @@ export async function generateWorkshopNotes(
   );
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return validateWorkshopNotes(parsed);
+    return validateWorkshopNotes(parsed, project);
   } catch (error) {
     const validationError =
       error instanceof Error
