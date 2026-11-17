@@ -18,6 +18,8 @@ const STAIR_LENGTH_FIELDS = [
   "totalRise",
   "totalRun",
   "width",
+  "landingLength",
+  "spiralRadius",
   "treadThickness",
   "riserThickness",
   "nosing",
@@ -80,6 +82,22 @@ function normalizeStairPatch(
   }
   if (!["straight", "l-shaped", "u-shaped", "spiral"].includes(next.style)) {
     throw new RangeError("Unknown staircase style.");
+  }
+  if (!Number.isFinite(next.spiralTurns) || next.spiralTurns <= 0 || next.spiralTurns > 4) {
+    throw new RangeError("Spiral turns must be greater than zero and no more than four.");
+  }
+  next.spiralTurns = Number(next.spiralTurns.toFixed(3));
+  if (
+    (next.style === "l-shaped" || next.style === "u-shaped") &&
+    next.landingLength < next.width
+  ) {
+    if (patch.landingLength !== undefined) {
+      throw new RangeError("Landing length must be at least the stair width.");
+    }
+    next.landingLength = next.width;
+  }
+  if (next.style === "spiral" && next.spiralRadius <= next.width / 2) {
+    throw new RangeError("Spiral radius must exceed half the stair width.");
   }
   return next;
 }

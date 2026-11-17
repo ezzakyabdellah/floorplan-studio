@@ -10,6 +10,9 @@ export type StairParameters = {
   totalRise: number;
   totalRun: number;
   width: number;
+  landingLength: number;
+  spiralRadius: number;
+  spiralTurns: number;
   treadThickness: number;
   riserThickness: number;
   nosing: number;
@@ -31,6 +34,7 @@ export type CalculatedMetrics = {
   treadCount: number;
   unitRise: number;
   unitRun: number;
+  totalWalkingRun: number;
   stringerLength: number;
   pitchAngleDegrees: number;
   plumbCutAngleDegrees: number;

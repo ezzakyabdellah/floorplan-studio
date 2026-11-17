@@ -37,6 +37,29 @@ describe("unified project state", () => {
     expect(useProjectStore.getState().stairParams.totalRise).toBe(before);
   });
 
+  it("normalizes L/U landing size and protects spiral walking-line dimensions", () => {
+    const store = useProjectStore.getState();
+    expect(
+      store.updateDesignParameters({
+        projectType: "staircase",
+        stairParams: { style: "l-shaped", width: 42 },
+      }).applied,
+    ).toBe(true);
+    expect(useProjectStore.getState().stairParams.landingLength).toBe(42);
+
+    const invalidLanding = useProjectStore
+      .getState()
+      .updateDesignParameters({ stairParams: { landingLength: 30 } });
+    expect(invalidLanding.applied).toBe(false);
+
+    const invalidRadius = useProjectStore
+      .getState()
+      .updateDesignParameters({
+        stairParams: { style: "spiral", spiralRadius: 20 },
+      });
+    expect(invalidRadius.applied).toBe(false);
+  });
+
   it("provides a JSON-serializable single source of truth", () => {
     const project = createDefaultProjectState();
     const roundTrip = JSON.parse(JSON.stringify(project));

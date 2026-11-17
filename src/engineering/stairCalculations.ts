@@ -1,5 +1,9 @@
 import { inchesToProjectUnits, projectUnitsToInches, roundLength } from "./units";
-import type { EngineeringUnits, StairParameters } from "./types";
+import type {
+  EngineeringUnits,
+  StairParameters,
+  StairStyle,
+} from "./types";
 
 const MAX_RISER_INCHES = 7.75;
 
@@ -10,6 +14,7 @@ export type StairGeometry = {
   unitRiseExact: number;
   unitRun: number;
   unitRunExact: number;
+  totalWalkingRun: number;
   stringerLength: number;
   pitchAngleDegrees: number;
   plumbCutAngleDegrees: number;
@@ -22,17 +27,27 @@ function requirePositive(name: string, value: number) {
   }
 }
 
-/**
- * Calculates a straight flight from its aggregate rise and run.
- * L/U/spiral projects use the supplied aggregate run at this stage; individual
- * flights, landings, and spiral radii require additional geometry inputs.
- */
+/** Calculates aggregate stair geometry; spiral runs use the centerline arc length. */
 export function calculateStairGeometry(
-  params: Pick<StairParameters, "totalRise" | "totalRun">,
+  params: Pick<StairParameters, "totalRise" | "totalRun"> &
+    Partial<
+      Pick<StairParameters, "style" | "spiralRadius" | "spiralTurns">
+    >,
   units: EngineeringUnits,
 ): StairGeometry {
   requirePositive("Total rise", params.totalRise);
-  requirePositive("Total run", params.totalRun);
+  const style: StairStyle = params.style ?? "straight";
+  const totalWalkingRun =
+    style === "spiral"
+      ? 2 *
+        Math.PI *
+        (params.spiralRadius ?? Number.NaN) *
+        (params.spiralTurns ?? 1)
+      : params.totalRun;
+  requirePositive(
+    style === "spiral" ? "Spiral walking-line run" : "Total run",
+    totalWalkingRun,
+  );
 
   const totalRiseInches = projectUnitsToInches(params.totalRise, units);
   // The smallest whole riser count that doesn't exceed the cited common-code
@@ -43,13 +58,13 @@ export function calculateStairGeometry(
   );
   const treadCount = Math.max(1, stepCount - 1);
   const unitRise = roundLength(params.totalRise / stepCount, units);
-  const unitRun = roundLength(params.totalRun / treadCount, units);
+  const unitRun = roundLength(totalWalkingRun / treadCount, units);
   const stringerLength = roundLength(
-    Math.hypot(params.totalRise, params.totalRun),
+    Math.hypot(params.totalRise, totalWalkingRun),
     units,
   );
   const pitchAngleDegrees =
-    (Math.atan2(params.totalRise, params.totalRun) * 180) / Math.PI;
+    (Math.atan2(params.totalRise, totalWalkingRun) * 180) / Math.PI;
 
   return {
     stepCount,
@@ -57,7 +72,8 @@ export function calculateStairGeometry(
     unitRise,
     unitRiseExact: params.totalRise / stepCount,
     unitRun,
-    unitRunExact: params.totalRun / treadCount,
+    unitRunExact: totalWalkingRun / treadCount,
+    totalWalkingRun,
     stringerLength,
     pitchAngleDegrees: Number(pitchAngleDegrees.toFixed(2)),
     plumbCutAngleDegrees: Number(pitchAngleDegrees.toFixed(2)),
@@ -74,6 +90,9 @@ export function defaultStairParameters(
     totalRise: length(108),
     totalRun: length(132),
     width: length(36),
+    landingLength: length(36),
+    spiralRadius: length(36),
+    spiralTurns: 1,
     treadThickness: length(1.5),
     riserThickness: length(0.75),
     nosing: length(1),

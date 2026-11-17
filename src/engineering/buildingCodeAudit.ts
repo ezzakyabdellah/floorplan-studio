@@ -32,7 +32,7 @@ function auditStaircase(project: ProjectState): AuditFinding[] {
   const minimumHeadroom = inchesToProjectUnits(80, units);
   const maxOpening = maximumGuardOpening(units);
   const balusters = calculateBalusterSpacing(
-    stairParams.totalRun,
+    metrics.totalWalkingRun,
     Math.min(stairParams.balusterSpacingMax, maxOpening),
     stairParams.balusterThickness,
     units,
@@ -85,14 +85,14 @@ function auditStaircase(project: ProjectState): AuditFinding[] {
     );
   }
 
-  if (stairParams.style !== "straight") {
+  if (stairParams.style === "spiral") {
     findings.push(
       finding(
         "stair-layout-scope",
         "warning",
-        "Aggregate flight approximation",
-        `Phase 1 calculates overall rise/run for the ${stairParams.style} layout. Flight turns, landings, and spiral radius are not yet modeled.`,
-        "Geometry scope limitation: detailed multi-flight layout is planned for a later phase.",
+        "Spiral stair layout advisory",
+        "The audit uses a circular walking-line development. Verify tapered tread depth at the walkline, inner clear width, headroom, handrail, and local spiral-stair provisions.",
+        "IRC R311.7.10 (2021): spiral stairway requirements; verify adopted edition and all dimensional provisions.",
       ),
     );
   }

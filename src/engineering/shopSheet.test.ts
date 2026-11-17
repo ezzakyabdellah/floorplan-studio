@@ -6,6 +6,7 @@ import {
   renderShopSheetSvg,
 } from "./shopSheet";
 import { createDefaultProjectState } from "./projectStore";
+import { calculateStairGeometry } from "./stairCalculations";
 
 describe("dynamic 2D shop sheet", () => {
   it("draws all requested views and preserves project dimensions in annotations", () => {
@@ -39,6 +40,44 @@ describe("dynamic 2D shop sheet", () => {
     expect(svg).toContain("RUN 120 in");
     expect(svg).toContain("WIDTH 42 in");
     expect(notes.assemblyNotes.join(" ")).toContain("120 in");
+  });
+
+  it("renders distinct L, U, and spiral plan geometry", () => {
+    const base = createDefaultProjectState();
+    const lShape = {
+      ...base,
+      stairParams: { ...base.stairParams, style: "l-shaped" as const },
+    };
+    const uShape = {
+      ...base,
+      stairParams: { ...base.stairParams, style: "u-shaped" as const },
+    };
+    const spiral = {
+      ...base,
+      stairParams: {
+        ...base.stairParams,
+        style: "spiral" as const,
+        spiralRadius: 40,
+        spiralTurns: 1.5,
+      },
+    };
+    const render = (project: typeof base) =>
+      renderShopSheetSvg(
+        createShopSheetDocument(project, defaultWorkshopNotes(project)),
+      );
+    const lSvg = render(lShape);
+    const uSvg = render(uShape);
+    const spiralSvg = render(spiral);
+    expect(lSvg).toContain("L-SHAPED");
+    expect(lSvg).toContain("FLIGHT 1");
+    expect(lSvg).toContain("LANDING");
+    expect(uSvg).toContain("U-SHAPED");
+    expect(uSvg).toContain("FLIGHT 2");
+    expect(spiralSvg).toContain("RADIAL TREAD PLAN");
+    expect(spiralSvg).toContain("R 40 in");
+    expect(spiralSvg).toContain("1.5 turns");
+    expect(calculateStairGeometry(spiral.stairParams, spiral.units).totalWalkingRun)
+      .toBeCloseTo(2 * Math.PI * 40 * 1.5, 6);
   });
 
   it("produces a valid vector PDF with a consistent cross-reference table", () => {

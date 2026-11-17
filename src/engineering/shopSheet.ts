@@ -151,6 +151,103 @@ function verticalDimension(
   text(commands, x + 8, (y1 + y2) / 2, label, 11, ACCENT, "bold");
 }
 
+function directionArrow(
+  commands: SheetCommand[],
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  color = ACCENT,
+) {
+  line(commands, x1, y1, x2, y2, color, 1.4);
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  const headLength = 7;
+  const wing = 0.55;
+  line(
+    commands,
+    x2,
+    y2,
+    x2 - headLength * Math.cos(angle - wing),
+    y2 - headLength * Math.sin(angle - wing),
+    color,
+    1.4,
+  );
+  line(
+    commands,
+    x2,
+    y2,
+    x2 - headLength * Math.cos(angle + wing),
+    y2 - headLength * Math.sin(angle + wing),
+    color,
+    1.4,
+  );
+}
+
+type FlightLayout = {
+  rise: number;
+  run: number;
+  riserCount: number;
+  treadCount: number;
+};
+
+function flightLayouts(project: ProjectState): FlightLayout[] {
+  const { stairParams, units } = project;
+  const geometry = calculateStairGeometry(stairParams, units);
+  if (
+    (stairParams.style !== "l-shaped" && stairParams.style !== "u-shaped") ||
+    geometry.treadCount < 2
+  ) {
+    return [
+      {
+        rise: stairParams.totalRise,
+        run: geometry.totalWalkingRun,
+        riserCount: geometry.stepCount,
+        treadCount: geometry.treadCount,
+      },
+    ];
+  }
+  const firstRisers = Math.ceil(geometry.stepCount / 2);
+  const secondRisers = geometry.stepCount - firstRisers;
+  const firstTreads = Math.ceil(geometry.treadCount / 2);
+  const secondTreads = geometry.treadCount - firstTreads;
+  return [
+    {
+      rise: (stairParams.totalRise * firstRisers) / geometry.stepCount,
+      run: geometry.totalWalkingRun * (firstTreads / geometry.treadCount),
+      riserCount: firstRisers,
+      treadCount: firstTreads,
+    },
+    {
+      rise: (stairParams.totalRise * secondRisers) / geometry.stepCount,
+      run: geometry.totalWalkingRun * (secondTreads / geometry.treadCount),
+      riserCount: secondRisers,
+      treadCount: secondTreads,
+    },
+  ];
+}
+
+function appendFlightProfile(
+  points: Array<[number, number]>,
+  startX: number,
+  startY: number,
+  flight: FlightLayout,
+  scale: number,
+): [number, number] {
+  const unitRun = flight.treadCount > 0 ? (flight.run * scale) / flight.treadCount : 0;
+  const unitRise = (flight.rise * scale) / flight.riserCount;
+  for (let step = 0; step < flight.treadCount; step += 1) {
+    const x = startX + step * unitRun;
+    const y = startY - step * unitRise;
+    points.push([x + unitRun, y], [x + unitRun, y - unitRise]);
+  }
+  const endX = startX + flight.run * scale;
+  const endY = startY - flight.rise * scale;
+  if (flight.treadCount < flight.riserCount) {
+    points.push([endX, endY]);
+  }
+  return [endX, endY];
+}
+
 function addSideElevation(
   commands: SheetCommand[],
   project: ProjectState,
@@ -161,6 +258,10 @@ function addSideElevation(
 ) {
   const { stairParams, units } = project;
   const geometry = calculateStairGeometry(stairParams, units);
+  const flights = flightLayouts(project);
+  const hasLanding = flights.length > 1;
+  const landing = hasLanding ? stairParams.landingLength : 0;
+  const displayedRun = geometry.totalWalkingRun + landing;
   panel(
     commands,
     x,
@@ -168,28 +269,42 @@ function addSideElevation(
     width,
     height,
     "SIDE ELEVATION",
-    `${stairParams.style.toUpperCase()} · ${geometry.stepCount} risers / ${geometry.treadCount} treads`,
+    `${stairParams.style.toUpperCase()} · ${flights.length} flight${flights.length === 1 ? "" : "s"} · ${geometry.stepCount} risers / ${geometry.treadCount} treads`,
   );
   const left = x + 62;
   const bottom = y + height - 56;
   const availableWidth = width - 122;
   const availableHeight = height - 130;
   const scale = Math.min(
-    availableWidth / stairParams.totalRun,
+    availableWidth / displayedRun,
     availableHeight / stairParams.totalRise,
   );
-  const run = stairParams.totalRun * scale;
+  const run = displayedRun * scale;
   const rise = stairParams.totalRise * scale;
-  const stepRun = run / geometry.treadCount;
-  const stepRise = rise / geometry.stepCount;
   const points: Array<[number, number]> = [[left, bottom]];
-  for (let index = 0; index < geometry.treadCount; index += 1) {
-    const currentX = left + index * stepRun;
-    const currentY = bottom - index * stepRise;
-    points.push([currentX + stepRun, currentY]);
-    points.push([currentX + stepRun, currentY - stepRise]);
+  const [firstX, firstY] = appendFlightProfile(
+    points,
+    left,
+    bottom,
+    flights[0],
+    scale,
+  );
+  let endX = firstX;
+  let endY = firstY;
+  if (hasLanding) {
+    endX += landing * scale;
+    points.push([endX, endY]);
+    [endX, endY] = appendFlightProfile(
+      points,
+      endX,
+      endY,
+      flights[1],
+      scale,
+    );
   }
-  points.push([left + run, bottom - rise]);
+  if (Math.abs(endX - (left + run)) > 0.01 || Math.abs(endY - (bottom - rise)) > 0.01) {
+    points.push([left + run, bottom - rise]);
+  }
   commands.push({
     kind: "polyline",
     points,
@@ -204,7 +319,9 @@ function addSideElevation(
     left,
     left + run,
     bottom + 22,
-    `RUN ${formatLength(stairParams.totalRun, units)}`,
+    stairParams.style === "spiral"
+      ? `DEVELOPED WALKLINE ${formatLength(geometry.totalWalkingRun, units)}`
+      : `TREAD RUN ${formatLength(stairParams.totalRun, units)}${hasLanding ? ` + LANDING ${formatLength(landing, units)}` : ""}`,
   );
   verticalDimension(
     commands,
@@ -227,7 +344,7 @@ function addSideElevation(
     commands,
     x + 16,
     y + height - 12,
-    `AVG RISE ${geometry.unitRiseExact.toFixed(units === "imperial" ? 3 : 1)} ${units === "imperial" ? "in" : "mm"}  ·  TREAD ${formatLength(geometry.unitRun, units)}`,
+    `AVG RISE ${geometry.unitRiseExact.toFixed(units === "imperial" ? 3 : 1)} ${units === "imperial" ? "in" : "mm"}  ·  ${stairParams.style === "spiral" ? "WALKLINE" : "TREAD"} ${formatLength(geometry.unitRun, units)}`,
     10,
     MUTED,
   );
@@ -242,6 +359,8 @@ function addTopPlan(
   height: number,
 ) {
   const { stairParams, units } = project;
+  const geometry = calculateStairGeometry(stairParams, units);
+  const flights = flightLayouts(project);
   panel(
     commands,
     x,
@@ -249,48 +368,252 @@ function addTopPlan(
     width,
     height,
     "TOP PLAN",
-    "ORTHOGRAPHIC · AGGREGATE FLIGHT ENVELOPE",
+    `${stairParams.style.toUpperCase()} · ${stairParams.style === "spiral" ? "RADIAL TREAD PLAN" : "ORTHOGRAPHIC FLIGHT / LANDING LAYOUT"}`,
   );
-  const left = x + 62;
-  const top = y + 93;
-  const availableWidth = width - 112;
-  const availableHeight = height - 152;
+  const left = x + 50;
+  const top = y + 88;
+  const availableWidth = width - 100;
+  const availableHeight = height - 140;
+
+  if (stairParams.style === "spiral") {
+    const outerRadius = stairParams.spiralRadius + stairParams.width / 2;
+    const innerRadius = Math.max(
+      stairParams.spiralRadius - stairParams.width / 2,
+      stairParams.width * 0.08,
+    );
+    const scale = Math.min(
+      availableWidth / (outerRadius * 2),
+      availableHeight / (outerRadius * 2),
+    );
+    const radius = outerRadius * scale;
+    const centerX = left + availableWidth / 2;
+    const centerY = top + availableHeight / 2;
+    const outerPoints: Array<[number, number]> = [];
+    const innerPoints: Array<[number, number]> = [];
+    for (let index = 0; index <= 64; index += 1) {
+      const angle = (index / 64) * Math.PI * 2;
+      outerPoints.push([
+        centerX + radius * Math.cos(angle),
+        centerY + radius * Math.sin(angle),
+      ]);
+      innerPoints.push([
+        centerX + innerRadius * scale * Math.cos(angle),
+        centerY + innerRadius * scale * Math.sin(angle),
+      ]);
+    }
+    commands.push(
+      { kind: "polyline", points: outerPoints, color: INK, width: 2, fill: "none" },
+      { kind: "polyline", points: innerPoints, color: INK, width: 1.4, fill: "none" },
+    );
+    for (let index = 0; index < geometry.treadCount; index += 1) {
+      const angle =
+        -Math.PI / 2 +
+        (index / geometry.treadCount) *
+          Math.PI *
+          2 *
+          stairParams.spiralTurns;
+      line(
+        commands,
+        centerX + innerRadius * scale * Math.cos(angle),
+        centerY + innerRadius * scale * Math.sin(angle),
+        centerX + radius * Math.cos(angle),
+        centerY + radius * Math.sin(angle),
+        "#64748b",
+        0.9,
+      );
+    }
+    line(commands, centerX, centerY, centerX + radius, centerY, ACCENT, 1.1);
+    text(
+      commands,
+      centerX,
+      centerY + 4,
+      `R ${formatLength(stairParams.spiralRadius, units)}`,
+      10,
+      ACCENT,
+      "bold",
+      "middle",
+    );
+    text(
+      commands,
+      centerX,
+      top + availableHeight + 19,
+      `${geometry.treadCount} radial treads · ${stairParams.spiralTurns} turn${stairParams.spiralTurns === 1 ? "" : "s"}`,
+      10,
+      MUTED,
+      "normal",
+      "middle",
+    );
+    return;
+  }
+
+  if (stairParams.style === "l-shaped" && flights.length > 1) {
+    const first = flights[0];
+    const second = flights[1];
+    const envelopeWidth = first.run + stairParams.landingLength;
+    const envelopeHeight = stairParams.width + second.run;
+    const scale = Math.min(
+      availableWidth / envelopeWidth,
+      availableHeight / envelopeHeight,
+    );
+    const flightWidth = stairParams.width * scale;
+    const firstRun = first.run * scale;
+    const secondRun = second.run * scale;
+    const landingRun = stairParams.landingLength * scale;
+    const landingX = left + firstRun;
+    commands.push(
+      { kind: "rect", x: left, y: top, width: firstRun, height: flightWidth, stroke: INK, fill: "none", lineWidth: 2 },
+      { kind: "rect", x: landingX, y: top, width: landingRun, height: flightWidth, stroke: ACCENT, fill: "none", lineWidth: 2 },
+      {
+        kind: "rect",
+        x: landingX + Math.max(0, (landingRun - flightWidth) / 2),
+        y: top + flightWidth,
+        width: flightWidth,
+        height: secondRun,
+        stroke: INK,
+        fill: "none",
+        lineWidth: 2,
+      },
+    );
+    for (let index = 1; index < first.treadCount; index += 1) {
+      const treadX = left + (firstRun * index) / first.treadCount;
+      line(commands, treadX, top, treadX, top + flightWidth, "#64748b", 0.8);
+    }
+    for (let index = 1; index < second.treadCount; index += 1) {
+      const treadY = top + flightWidth + (secondRun * index) / second.treadCount;
+      const flightX = landingX + Math.max(0, (landingRun - flightWidth) / 2);
+      line(commands, flightX, treadY, flightX + flightWidth, treadY, "#64748b", 0.8);
+    }
+    directionArrow(commands, left + firstRun * 0.2, top + flightWidth / 2, left + firstRun * 0.8, top + flightWidth / 2);
+    const secondFlightX = landingX + Math.max(0, (landingRun - flightWidth) / 2);
+    directionArrow(
+      commands,
+      secondFlightX + flightWidth / 2,
+      top + flightWidth + secondRun * 0.2,
+      secondFlightX + flightWidth / 2,
+      top + flightWidth + secondRun * 0.8,
+    );
+    horizontalDimension(
+      commands,
+      left,
+      left + envelopeWidth * scale,
+      top + envelopeHeight * scale + 18,
+      `X ENVELOPE ${formatLength(envelopeWidth, units)}`,
+    );
+    verticalDimension(
+      commands,
+      left + envelopeWidth * scale + 18,
+      top,
+      top + envelopeHeight * scale,
+      `Y ${formatLength(envelopeHeight, units)}`,
+    );
+    text(commands, left + firstRun / 2, top + flightWidth / 2 + 4, "FLIGHT 1", 9, MUTED, "bold", "middle");
+    text(commands, landingX + landingRun / 2, top + flightWidth / 2 + 4, "LANDING", 9, ACCENT, "bold", "middle");
+    text(
+      commands,
+      landingX + Math.max(0, (landingRun - flightWidth) / 2) + flightWidth / 2,
+      top + flightWidth + secondRun / 2,
+      "FLIGHT 2",
+      9,
+      MUTED,
+      "bold",
+      "middle",
+    );
+    return;
+  }
+
+  if (stairParams.style === "u-shaped" && flights.length > 1) {
+    const first = flights[0];
+    const second = flights[1];
+    const gap = stairParams.width * 0.12;
+    const envelopeWidth = stairParams.width * 2 + gap;
+    const envelopeHeight =
+      Math.max(first.run, second.run) + stairParams.landingLength;
+    const scale = Math.min(
+      availableWidth / envelopeWidth,
+      availableHeight / envelopeHeight,
+    );
+    const flightWidth = stairParams.width * scale;
+    const landingDepth = stairParams.landingLength * scale;
+    const firstRun = first.run * scale;
+    const secondRun = second.run * scale;
+    const secondX = left + flightWidth + gap * scale;
+    commands.push(
+      { kind: "rect", x: left, y: top + landingDepth, width: flightWidth, height: firstRun, stroke: INK, fill: "none", lineWidth: 2 },
+      { kind: "rect", x: secondX, y: top + landingDepth, width: flightWidth, height: secondRun, stroke: INK, fill: "none", lineWidth: 2 },
+      { kind: "rect", x: left, y: top, width: envelopeWidth * scale, height: landingDepth, stroke: ACCENT, fill: "none", lineWidth: 2 },
+    );
+    for (let index = 1; index < first.treadCount; index += 1) {
+      const treadY = top + landingDepth + (firstRun * index) / first.treadCount;
+      line(commands, left, treadY, left + flightWidth, treadY, "#64748b", 0.8);
+    }
+    for (let index = 1; index < second.treadCount; index += 1) {
+      const treadY = top + landingDepth + (secondRun * index) / second.treadCount;
+      line(commands, secondX, treadY, secondX + flightWidth, treadY, "#64748b", 0.8);
+    }
+    directionArrow(
+      commands,
+      left + flightWidth / 2,
+      top + landingDepth + firstRun * 0.8,
+      left + flightWidth / 2,
+      top + landingDepth + firstRun * 0.2,
+    );
+    directionArrow(
+      commands,
+      secondX + flightWidth / 2,
+      top + landingDepth + secondRun * 0.2,
+      secondX + flightWidth / 2,
+      top + landingDepth + secondRun * 0.8,
+    );
+    horizontalDimension(
+      commands,
+      left,
+      left + envelopeWidth * scale,
+      top + envelopeHeight * scale + 18,
+      `WIDTH ${formatLength(envelopeWidth, units)}`,
+    );
+    text(commands, left + envelopeWidth * scale / 2, top + landingDepth / 2 + 3, "LANDING", 9, ACCENT, "bold", "middle");
+    text(commands, left + flightWidth / 2, top + landingDepth + firstRun / 2, "FLIGHT 1", 9, MUTED, "bold", "middle");
+    text(commands, secondX + flightWidth / 2, top + landingDepth + secondRun / 2, "FLIGHT 2", 9, MUTED, "bold", "middle");
+    return;
+  }
+
+  const run = geometry.totalWalkingRun;
+  const stairWidth = stairParams.width;
   const scale = Math.min(
-    availableWidth / stairParams.totalRun,
-    availableHeight / stairParams.width,
+    availableWidth / run,
+    availableHeight / stairWidth,
   );
-  const run = stairParams.totalRun * scale;
-  const stairWidth = stairParams.width * scale;
+  const runPx = run * scale;
+  const widthPx = stairWidth * scale;
   commands.push({
     kind: "rect",
     x: left,
     y: top,
-    width: run,
-    height: stairWidth,
+    width: runPx,
+    height: widthPx,
     stroke: INK,
     fill: "none",
     lineWidth: 2,
   });
-  const treadCount = calculateStairGeometry(stairParams, units).treadCount;
-  for (let index = 1; index < treadCount; index += 1) {
-    const treadX = left + (run * index) / treadCount;
-    line(commands, treadX, top, treadX, top + stairWidth, "#64748b", 0.8);
+  for (let index = 1; index < geometry.treadCount; index += 1) {
+    const treadX = left + (runPx * index) / geometry.treadCount;
+    line(commands, treadX, top, treadX, top + widthPx, "#64748b", 0.8);
   }
   horizontalDimension(
     commands,
     left,
-    left + run,
-    top + stairWidth + 20,
-    `RUN ${formatLength(stairParams.totalRun, units)}`,
+    left + runPx,
+    top + widthPx + 20,
+    `RUN ${formatLength(run, units)}`,
   );
   verticalDimension(
     commands,
-    left + run + 19,
+    left + runPx + 19,
     top,
-    top + stairWidth,
+    top + widthPx,
     `WIDTH ${formatLength(stairParams.width, units)}`,
   );
-  text(commands, left + run / 2, top + stairWidth / 2 + 4, "STAIR FLIGHT", 11, MUTED, "bold", "middle");
+  text(commands, left + runPx / 2, top + widthPx / 2 + 4, "STAIR FLIGHT", 11, MUTED, "bold", "middle");
 }
 
 function addFrontElevation(
@@ -348,14 +671,24 @@ function addStringerNotch(
 ) {
   const { stairParams, units } = project;
   const geometry = calculateStairGeometry(stairParams, units);
+  const flights = flightLayouts(project);
+  const hasLanding = flights.length > 1;
+  const landing = hasLanding ? stairParams.landingLength : 0;
+  const developedRun = geometry.totalWalkingRun + landing;
   panel(
     commands,
     x,
     y,
     width,
     height,
-    "STRINGER NOTCH LAYOUT",
-    "PROFILE · NOT TO SCALE FOR CUTTING",
+    stairParams.style === "spiral"
+      ? "SPIRAL TREAD DEVELOPMENT"
+      : "STRINGER NOTCH LAYOUT",
+    stairParams.style === "spiral"
+      ? "DEVELOPED WALKLINE PROFILE · RADIAL TREADS SHOWN IN PLAN"
+      : hasLanding
+        ? "TWO FLIGHT PROFILE · LANDING BETWEEN FLIGHTS"
+        : "PROFILE · NOT TO SCALE FOR CUTTING",
   );
   const marginX = 26;
   const topPad = 80;
@@ -363,24 +696,36 @@ function addStringerNotch(
   const availableWidth = width - marginX * 2;
   const availableHeight = height - topPad - 60;
   const scale = Math.min(
-    availableWidth / stairParams.totalRun,
+    availableWidth / developedRun,
     availableHeight / stairParams.totalRise,
   );
-  const run = stairParams.totalRun * scale;
+  const run = developedRun * scale;
   const rise = stairParams.totalRise * scale;
   const left = x + marginX;
-  const stepRun = run / geometry.treadCount;
-  const stepRise = rise / geometry.stepCount;
   const points: Array<[number, number]> = [[left, bottom]];
-  for (let index = 0; index < geometry.treadCount; index += 1) {
-    const currentX = left + index * stepRun;
-    const currentY = bottom - index * stepRise;
-    points.push(
-      [currentX + stepRun, currentY],
-      [currentX + stepRun, currentY - stepRise],
+  const [firstX, firstY] = appendFlightProfile(
+    points,
+    left,
+    bottom,
+    flights[0],
+    scale,
+  );
+  let endX = firstX;
+  let endY = firstY;
+  if (hasLanding) {
+    endX += landing * scale;
+    points.push([endX, endY]);
+    [endX, endY] = appendFlightProfile(
+      points,
+      endX,
+      endY,
+      flights[1],
+      scale,
     );
   }
-  points.push([left + run, bottom - rise]);
+  if (Math.abs(endX - (left + run)) > 0.01 || Math.abs(endY - (bottom - rise)) > 0.01) {
+    points.push([left + run, bottom - rise]);
+  }
   commands.push({
     kind: "polyline",
     points,
@@ -388,12 +733,22 @@ function addStringerNotch(
     width: 2,
     fill: "none",
   });
-  horizontalDimension(commands, left, left + run, bottom + 17, `RUN ${formatLength(stairParams.totalRun, units)}`);
+  horizontalDimension(
+    commands,
+    left,
+    left + run,
+    bottom + 17,
+    stairParams.style === "spiral"
+      ? `WALKLINE ${formatLength(geometry.totalWalkingRun, units)}`
+      : `RUN ${formatLength(stairParams.totalRun, units)}${hasLanding ? ` + LANDING ${formatLength(landing, units)}` : ""}`,
+  );
   text(
     commands,
     x + 16,
     y + height - 10,
-    `${geometry.treadCount} tread notches · ${geometry.stepCount} risers · stringer line ${formatLength(geometry.stringerLength, units)}`,
+    stairParams.style === "spiral"
+      ? `${geometry.treadCount} radial treads · helix development ${formatLength(geometry.stringerLength, units)}`
+      : `${geometry.treadCount} tread notches · ${geometry.stepCount} risers · stringer line ${formatLength(geometry.stringerLength, units)}`,
     9,
     MUTED,
   );

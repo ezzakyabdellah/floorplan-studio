@@ -1,4 +1,5 @@
 import { generateLocalJson, type StreamOptions } from "../services/localAiService";
+import { logAiError } from "../services/aiLog";
 import { defaultWorkshopNotes, type WorkshopNotes } from "./shopSheet";
 import type { ProjectState } from "./types";
 
@@ -68,12 +69,27 @@ export async function generateWorkshopNotes(
     `Deterministic calculated metrics: ${JSON.stringify(project.calculatedMetrics)}`,
     `Offline note outline for context: ${JSON.stringify(fallback)}`,
   ].join("\n\n");
-  const raw = await generateLocalJson(prompt, options, notesSchema);
-  let parsed: unknown;
+  const raw = await generateLocalJson(
+    prompt,
+    {
+      ...options,
+      operation: options.operation ?? "workshop-assembly-notes",
+    },
+    notesSchema,
+  );
   try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error("The local model returned malformed workshop-note JSON.");
+    const parsed = JSON.parse(raw) as unknown;
+    return validateWorkshopNotes(parsed);
+  } catch (error) {
+    const validationError =
+      error instanceof Error
+        ? error
+        : new Error("The local model returned malformed workshop-note JSON.");
+    await logAiError(
+      "workshop-notes-output-validation",
+      options.model?.trim() || "llama3.2",
+      validationError,
+    );
+    throw validationError;
   }
-  return validateWorkshopNotes(parsed);
 }

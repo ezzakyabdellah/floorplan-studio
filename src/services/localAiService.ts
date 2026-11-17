@@ -2,6 +2,7 @@ import type { Opening, Wall } from "../types/floorplan";
 import { isTauriRuntime } from "../utils/fileIO";
 import { wallLength } from "../utils/geometry";
 import { runComplianceChecks } from "../utils/spatialRules";
+import { logAiError, logAiOutput } from "./aiLog";
 
 export const OLLAMA_BASE_URL = "http://localhost:11434";
 export const OLLAMA_GENERATE_URL = `${OLLAMA_BASE_URL}/api/generate`;
@@ -18,6 +19,8 @@ export type StreamOptions = {
   model?: string;
   signal?: AbortSignal;
   onChunk?: (chunk: string) => void;
+  /** Log label only; this value is never sent to the local model. */
+  operation?: string;
 };
 
 type OllamaTag = {
@@ -64,6 +67,7 @@ export async function checkOllamaStatus(
       baseUrl: OLLAMA_BASE_URL,
     };
   } catch (error) {
+    await logAiError("ollama-status-check", "Ollama", error);
     return {
       online: false,
       models: [],
@@ -123,81 +127,91 @@ async function streamOllama(
   options: StreamOptions,
 ): Promise<string> {
   const model = options.model?.trim() || "llama3.2";
-  const response = await aiFetch(OLLAMA_GENERATE_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      prompt,
-      stream: true,
-      options: { temperature: 0.2 },
-    }),
-    signal: options.signal,
-  });
+  const operation = options.operation ?? "local-text-generation";
+  try {
+    const response = await aiFetch(OLLAMA_GENERATE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        prompt,
+        stream: true,
+        options: { temperature: 0.2 },
+      }),
+      signal: options.signal,
+    });
 
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(
-      `Ollama request failed (${response.status})${detail ? `: ${detail.slice(0, 180)}` : ""}`,
-    );
-  }
-
-  let fullText = "";
-  const emit = (chunk: string) => {
-    if (!chunk) return;
-    fullText += chunk;
-    options.onChunk?.(chunk);
-  };
-
-  const parseLine = (line: string) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    let payload: { response?: string; error?: string };
-    try {
-      payload = JSON.parse(trimmed) as { response?: string; error?: string };
-    } catch {
-      return;
-    }
-    if (payload.error) throw new Error(payload.error);
-    if (typeof payload.response === "string") emit(payload.response);
-  };
-
-  const canStream =
-    response.body && typeof response.body.getReader === "function";
-
-  if (canStream && response.body) {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) parseLine(line);
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `Ollama request failed (${response.status})${detail ? `: ${detail.slice(0, 180)}` : ""}`,
+      );
     }
 
-    buffer += decoder.decode();
-    parseLine(buffer);
-  } else {
-    const text = await response.text();
-    for (const line of text.split("\n")) parseLine(line);
-  }
+    let fullText = "";
+    const emit = (chunk: string) => {
+      if (!chunk) return;
+      fullText += chunk;
+      options.onChunk?.(chunk);
+    };
 
-  if (!fullText.trim()) {
-    throw new Error("Ollama returned an empty response.");
-  }
+    const parseLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let payload: { response?: string; error?: string };
+      try {
+        payload = JSON.parse(trimmed) as { response?: string; error?: string };
+      } catch {
+        return;
+      }
+      if (payload.error) throw new Error(payload.error);
+      if (typeof payload.response === "string") emit(payload.response);
+    };
 
-  return fullText.trim();
+    const canStream =
+      response.body && typeof response.body.getReader === "function";
+
+    if (canStream && response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) parseLine(line);
+      }
+
+      buffer += decoder.decode();
+      parseLine(buffer);
+    } else {
+      const text = await response.text();
+      for (const line of text.split("\n")) parseLine(line);
+    }
+
+    if (!fullText.trim()) {
+      throw new Error("Ollama returned an empty response.");
+    }
+    const output = fullText.trim();
+    await logAiOutput(operation, model, output);
+    return output;
+  } catch (error) {
+    await logAiError(operation, model, error);
+    throw error;
+  }
 }
 
 export function generateLocalText(
   prompt: string,
   options: StreamOptions = {},
 ): Promise<string> {
-  return streamOllama(prompt, options);
+  return streamOllama(prompt, {
+    ...options,
+    operation: options.operation ?? "local-text-generation",
+  });
 }
 
 export async function generateLocalJson(
@@ -206,6 +220,7 @@ export async function generateLocalJson(
   format: unknown = "json",
 ): Promise<string> {
   const model = options.model?.trim() || "llama3.2";
+  const operation = options.operation ?? "structured-local-generation";
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), 90_000);
   const abortHandler = () => controller.abort();
@@ -237,7 +252,12 @@ export async function generateLocalJson(
     if (typeof payload.response !== "string" || !payload.response.trim()) {
       throw new Error("Ollama returned an empty JSON furniture suggestion.");
     }
-    return payload.response.trim();
+    const output = payload.response.trim();
+    await logAiOutput(operation, model, output);
+    return output;
+  } catch (error) {
+    await logAiError(operation, model, error);
+    throw error;
   } finally {
     globalThis.clearTimeout(timeout);
     options.signal?.removeEventListener("abort", abortHandler);
@@ -258,7 +278,10 @@ export function analyzeComplianceWithLLM(
     "Return 4 to 7 prioritized findings. End with one short recommended next step.",
   ].join("\n");
 
-  return streamOllama(prompt, options);
+  return streamOllama(prompt, {
+    ...options,
+    operation: options.operation ?? "floorplan-compliance-audit",
+  });
 }
 
 export function askPlanQuestion(
@@ -276,5 +299,8 @@ export function askPlanQuestion(
     "Answer the question directly using the scene data. If the plan does not contain enough information, say what is missing.",
   ].join("\n");
 
-  return streamOllama(prompt, options);
+  return streamOllama(prompt, {
+    ...options,
+    operation: options.operation ?? "floorplan-question",
+  });
 }

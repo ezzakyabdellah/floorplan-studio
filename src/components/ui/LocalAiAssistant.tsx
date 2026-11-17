@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Cpu,
+  Download,
   Eraser,
   Loader2,
   RefreshCw,
@@ -21,6 +22,7 @@ import {
 } from "../../services/localAiService";
 import { runComplianceChecks } from "../../utils/spatialRules";
 import { cn } from "../../utils/cn";
+import { exportAiLog, getAiLogLocation } from "../../services/aiLog";
 
 type ChatMessage = {
   id: string;
@@ -64,6 +66,8 @@ export function LocalAiAssistant() {
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [aiLogLocation, setAiLogLocation] = useState("ai-log.jsonl");
+  const [exportingLog, setExportingLog] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -85,6 +89,16 @@ export function LocalAiAssistant() {
     if (!open || status) return;
     void refreshStatus();
   }, [open, status, refreshStatus]);
+
+  useEffect(() => {
+    let alive = true;
+    void getAiLogLocation().then((location) => {
+      if (alive) setAiLogLocation(location);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     const node = scrollRef.current;
@@ -223,6 +237,32 @@ export function LocalAiAssistant() {
     setError(null);
   };
 
+  const handleExportLog = async () => {
+    setExportingLog(true);
+    setError(null);
+    try {
+      const path = await exportAiLog();
+      if (path) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: createMessageId(),
+            role: "assistant",
+            content: `AI output/error log exported to ${path}.`,
+          },
+        ]);
+      }
+    } catch (exportError) {
+      setError(
+        exportError instanceof Error
+          ? exportError.message
+          : "Could not export the AI log.",
+      );
+    } finally {
+      setExportingLog(false);
+    }
+  };
+
   const modelOptions =
     status?.models && status.models.length > 0
       ? status.models
@@ -280,6 +320,20 @@ export function LocalAiAssistant() {
             <RefreshCw
               className={cn("h-4 w-4", checking && "animate-spin")}
             />
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleExportLog()}
+            disabled={exportingLog}
+            className="rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-accent disabled:opacity-40"
+            aria-label="Export AI log file"
+            title={`Export AI output/error log · ${aiLogLocation}`}
+          >
+            {exportingLog ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
           </button>
           <button
             type="button"

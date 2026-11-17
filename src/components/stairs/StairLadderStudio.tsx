@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  Download,
   LoaderCircle,
   Ruler,
   Send,
@@ -34,6 +35,11 @@ import type {
 } from "../../engineering/types";
 import { cn } from "../../utils/cn";
 import { WorkshopDrawings } from "./WorkshopDrawings";
+import {
+  exportAiLog,
+  getAiLogLocation,
+  logAiError,
+} from "../../services/aiLog";
 
 type Props = { onBack: () => void };
 
@@ -221,6 +227,8 @@ export function StairLadderStudio({ onBack }: Props) {
     "I only extract requested parameters. Geometry and code checks are always calculated by the deterministic rule engine.",
   );
   const [busy, setBusy] = useState(false);
+  const [logBusy, setLogBusy] = useState(false);
+  const [aiLogLocation, setAiLogLocation] = useState("ai-log.jsonl");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -229,6 +237,16 @@ export function StairLadderStudio({ onBack }: Props) {
       if (!alive) return;
       setStatus(next);
       if (next.models.length > 0) setModel(next.models[0]);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void getAiLogLocation().then((location) => {
+      if (alive) setAiLogLocation(location);
     });
     return () => {
       alive = false;
@@ -298,6 +316,9 @@ export function StairLadderStudio({ onBack }: Props) {
         `${result.response}\n\nSource: ${result.source === "local-model" ? `${model} via local Ollama` : "offline command parser"}.`,
       );
     } catch (submitError) {
+      if (status?.online) {
+        await logAiError("stairs-design-copilot-apply", model, submitError);
+      }
       setError(
         submitError instanceof Error
           ? submitError.message
@@ -314,6 +335,23 @@ export function StairLadderStudio({ onBack }: Props) {
     setCopilotMessage(
       `Deterministic audit: ${next.passCount} passed, ${next.failCount} failed, ${next.warningCount} warning${next.warningCount === 1 ? "" : "s"}. AI does not calculate these results.`,
     );
+  };
+
+  const handleExportAiLog = async () => {
+    setLogBusy(true);
+    setError(null);
+    try {
+      const path = await exportAiLog();
+      if (path) setCopilotMessage(`AI log exported to ${path}.`);
+    } catch (logError) {
+      setError(
+        logError instanceof Error
+          ? logError.message
+          : "Could not export the AI log.",
+      );
+    } finally {
+      setLogBusy(false);
+    }
   };
 
   const setProjectType = (value: "staircase" | "ladder") => {
@@ -460,8 +498,18 @@ export function StairLadderStudio({ onBack }: Props) {
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                       <NumberInput label="Total rise" value={stairParams.totalRise} unit={unitLabel} onChange={(totalRise) => updateDesignParameters({ stairParams: { totalRise } })} />
-                      <NumberInput label="Total run" value={stairParams.totalRun} unit={unitLabel} onChange={(totalRun) => updateDesignParameters({ stairParams: { totalRun } })} />
+                      {stairParams.style !== "spiral" ? (
+                        <NumberInput label="Total run (treads)" value={stairParams.totalRun} unit={unitLabel} onChange={(totalRun) => updateDesignParameters({ stairParams: { totalRun } })} />
+                      ) : (
+                        <>
+                          <NumberInput label="Spiral radius" value={stairParams.spiralRadius} unit={unitLabel} onChange={(spiralRadius) => updateDesignParameters({ stairParams: { spiralRadius } })} />
+                          <NumberInput label="Spiral turns" value={stairParams.spiralTurns} unit="turns" min={0.25} step={0.25} onChange={(spiralTurns) => updateDesignParameters({ stairParams: { spiralTurns } })} />
+                        </>
+                      )}
                       <NumberInput label="Stair width" value={stairParams.width} unit={unitLabel} onChange={(width) => updateDesignParameters({ stairParams: { width } })} />
+                      {stairParams.style === "l-shaped" || stairParams.style === "u-shaped" ? (
+                        <NumberInput label="Landing length" value={stairParams.landingLength} unit={unitLabel} onChange={(landingLength) => updateDesignParameters({ stairParams: { landingLength } })} />
+                      ) : null}
                       <NumberInput label="Tread thickness" value={stairParams.treadThickness} unit={unitLabel} onChange={(treadThickness) => updateDesignParameters({ stairParams: { treadThickness } })} />
                       <NumberInput label="Riser thickness" value={stairParams.riserThickness} unit={unitLabel} onChange={(riserThickness) => updateDesignParameters({ stairParams: { riserThickness } })} />
                       <NumberInput label="Nosing" value={stairParams.nosing} unit={unitLabel} onChange={(nosing) => updateDesignParameters({ stairParams: { nosing } })} />
@@ -476,9 +524,11 @@ export function StairLadderStudio({ onBack }: Props) {
                     </div>
                     <p className="mt-3 rounded-lg border border-amber-500/15 bg-amber-500/[0.04] p-2.5 text-[10px] leading-relaxed text-amber-100/70">
                       Headroom is checked from the measured clearance above. Ceiling height alone cannot establish stair headroom without ceiling-location geometry.
-                      {stairParams.style !== "straight"
-                        ? " This phase uses aggregate rise/run; turns, landings, and spiral radius are not yet modeled."
-                        : ""}
+                      {stairParams.style === "l-shaped" || stairParams.style === "u-shaped"
+                        ? " The shop sheet splits the aggregate rise/run into two flights and uses the editable landing length."
+                        : stairParams.style === "spiral"
+                          ? " The plan view uses radial treads from the centerline radius and turn count; the elevation is a developed walkline profile."
+                          : ""}
                     </p>
                   </div>
                 ) : (
@@ -556,6 +606,9 @@ export function StairLadderStudio({ onBack }: Props) {
                         <Metric label="Unit run" value={format(metrics.unitRun)} />
                         <Metric label="Stringer length" value={format(metrics.stringerLength)} />
                         <Metric label="Pitch angle" value={`${metrics.pitchAngleDegrees}°`} />
+                        {stairParams.style === "spiral" ? (
+                          <Metric label="Walking-line development" value={format(metrics.totalWalkingRun)} note={`${stairParams.spiralTurns} turn${stairParams.spiralTurns === 1 ? "" : "s"} at centerline radius`} />
+                        ) : null}
                         <Metric label="Plumb / level cuts" value={`${metrics.plumbCutAngleDegrees}° / ${metrics.levelCutAngleDegrees}°`} />
                         <Metric label="Balusters" value={`${metrics.balusterCount}`} note={`${format(metrics.balusterClearGap)} clear gap along total run`} />
                         <Metric label="Measured headroom" value={format(metrics.headroomClearance)} />
@@ -628,6 +681,20 @@ export function StairLadderStudio({ onBack }: Props) {
                     <span className="ml-auto font-normal text-slate-600">
                       {status?.online ? model : "offline parser"}
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleExportAiLog()}
+                      disabled={logBusy}
+                      aria-label="Export AI log file"
+                      title={`AI output/error log: ${aiLogLocation}`}
+                      className="rounded-md p-1 text-slate-500 transition hover:bg-white/5 hover:text-accent disabled:opacity-40"
+                    >
+                      {logBusy ? (
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Download className="h-3.5 w-3.5" />
+                      )}
+                    </button>
                   </div>
                   {status?.online ? (
                     <select
@@ -677,6 +744,10 @@ export function StairLadderStudio({ onBack }: Props) {
                   </div>
                   <p className="mt-1.5 text-[9px] text-slate-600">
                     Local-only · No cloud calls · Math is never delegated to AI
+                  </p>
+                  <p className="mt-1 text-[8px] leading-relaxed text-slate-600">
+                    AI outputs/errors append to {aiLogLocation}. Prompts are not
+                    logged; use the download icon to export the JSONL log.
                   </p>
                 </div>
               </aside>

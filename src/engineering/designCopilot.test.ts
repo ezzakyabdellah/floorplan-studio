@@ -56,6 +56,19 @@ describe("design copilot parameter extraction", () => {
     expect(patch?.stairParams?.width).toBe(3.5);
   });
 
+  it("extracts layout-specific landing and spiral parameters", () => {
+    const patch = parseOfflineDesignRequest(
+      "Use an L-shaped stair with a 42 inch landing, or a spiral radius of 40 inches and 1.5 turns",
+      { units: "imperial" },
+    );
+    expect(patch?.stairParams).toMatchObject({
+      style: "spiral",
+      landingLength: 42,
+      spiralRadius: 40,
+      spiralTurns: 1.5,
+    });
+  });
+
   it("executes the structured update tool and strips model-supplied unknown fields", async () => {
     const modelResponse = {
       tool: "updateDesignParameters",

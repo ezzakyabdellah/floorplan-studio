@@ -15,7 +15,7 @@ export function calculateProjectMetrics(
     project.ladderParams.ladderType,
   );
   const balusters = calculateBalusterSpacing(
-    project.stairParams.totalRun,
+    stairs.totalWalkingRun,
     Math.min(
       project.stairParams.balusterSpacingMax,
       maximumGuardOpening(project.units),

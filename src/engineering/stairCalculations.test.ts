@@ -30,6 +30,20 @@ describe("stair geometry", () => {
     expect(Number.isInteger(result.stringerLength)).toBe(true);
   });
 
+  it("develops spiral stairs along the centerline radius and configured turns", () => {
+    const result = calculateStairGeometry(
+      {
+        totalRise: 108,
+        totalRun: 132,
+        style: "spiral",
+        spiralRadius: 36,
+        spiralTurns: 1,
+      },
+      "imperial",
+    );
+    expect(result.totalWalkingRun).toBeCloseTo(2 * Math.PI * 36, 10);
+  });
+
   it("formats imperial lengths in reduced sixteenth-inch fractions", () => {
     expect(formatLength(7.6875, "imperial")).toBe("7 11/16 in");
     expect(formatLength(36, "imperial")).toBe("36 in");

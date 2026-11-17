@@ -1,4 +1,5 @@
 import { generateLocalJson, type StreamOptions } from "../services/localAiService";
+import { logAiError } from "../services/aiLog";
 import { runBuildingCodeAudit } from "./buildingCodeAudit";
 import { feetToProjectUnits, inchesToProjectUnits } from "./units";
 import type {
@@ -29,6 +30,9 @@ export const DESIGN_TOOL_SCHEMAS = [
             totalRise: { type: "number" },
             totalRun: { type: "number" },
             width: { type: "number" },
+            landingLength: { type: "number" },
+            spiralRadius: { type: "number" },
+            spiralTurns: { type: "number" },
             headroomCeilingHeight: { type: "number" },
             headroomClearance: { type: ["number", "null"] },
             balusterSpacingMax: { type: "number" },
@@ -111,12 +115,14 @@ function dimensionInProjectUnits(
 function inferDimensionTarget(
   before: string,
   after: string,
-): "totalRise" | "totalRun" | "width" | "workingHeight" | "headroomClearance" | "headroomCeilingHeight" | "balusterSpacingMax" | null {
+): "totalRise" | "totalRun" | "width" | "workingHeight" | "headroomClearance" | "headroomCeilingHeight" | "balusterSpacingMax" | "landingLength" | "spiralRadius" | null {
   const labels = [
     ["workingHeight", /\bworking\s+height\b|\bladder\s+height\b/gi],
     ["headroomClearance", /\bheadroom\b|\bclearance\b/gi],
     ["balusterSpacingMax", /\bbaluster\b|\bguard\s+spacing\b|\bopening\s+spacing\b/gi],
     ["width", /\b(?:stair(?:case)?\s+)?width\b/gi],
+    ["landingLength", /\blanding(?:\s+(?:length|size))?\b/gi],
+    ["spiralRadius", /\bspiral\s+radius\b|\b(?:inner|outer)\s+radius\b/gi],
     ["totalRun", /\bhallway\b|\bhorizontal\b|\btotal\s+run\b|\brun\b|\blength\b/gi],
     ["headroomCeilingHeight", /\bceiling\s+height\b/gi],
     ["totalRise", /\bfloor[- ]to[- ]floor\b|\btotal\s+rise\b|\brise\b|\bvertical\s+height\b/gi],
@@ -159,6 +165,17 @@ export function parseOfflineDesignRequest(
     const styleText = styleMatch[1].replace(" ", "-") as StairStyle;
     patch.stairParams = { style: styleText };
     patch.projectType = "staircase";
+  }
+  const spiralTurnsMatch = text.match(
+    /\b(\d+(?:\.\d+)?)\s*(?:full\s+)?turns?\b/,
+  );
+  if (spiralTurnsMatch) {
+    patch.projectType = "staircase";
+    patch.stairParams = {
+      ...patch.stairParams,
+      style: "spiral",
+      spiralTurns: Number(spiralTurnsMatch[1]),
+    };
   }
   if (/\b(ladder|setback|extension ladder|step ladder)\b/.test(text)) {
     patch.projectType = "ladder";
@@ -273,6 +290,8 @@ function sanitizeToolCall(call: DesignToolCall): DesignToolCall {
     "totalRise",
     "totalRun",
     "width",
+    "landingLength",
+    "spiralRadius",
     "headroomCeilingHeight",
     "headroomClearance",
     "balusterSpacingMax",
@@ -286,6 +305,12 @@ function sanitizeToolCall(call: DesignToolCall): DesignToolCall {
         | number
         | null;
     }
+  }
+  if (
+    typeof stairSource.spiralTurns === "number" &&
+    Number.isFinite(stairSource.spiralTurns)
+  ) {
+    stairParams.spiralTurns = stairSource.spiralTurns;
   }
   if (Object.keys(stairParams).length > 0) result.stairParams = stairParams;
 
@@ -349,25 +374,34 @@ export async function requestDesignToolCall(
       "Only include parameter values explicitly requested or unambiguously stated by the user. Use auditBuildingCode if the user asks for a code/safety audit.",
       `User request: ${request}`,
     ].join("\n\n"),
-    options,
+    { ...options, operation: options.operation ?? "stairs-design-copilot" },
     responseFormat(),
   );
-  const parsed = JSON.parse(raw) as {
-    tool?: unknown;
-    arguments?: unknown;
-    message?: unknown;
-  };
-  const toolCall = { tool: parsed.tool, arguments: parsed.arguments };
-  if (!isValidToolCall(toolCall)) {
-    throw new Error("The local model returned an invalid design tool call.");
+  try {
+    const parsed = JSON.parse(raw) as {
+      tool?: unknown;
+      arguments?: unknown;
+      message?: unknown;
+    };
+    const toolCall = { tool: parsed.tool, arguments: parsed.arguments };
+    if (!isValidToolCall(toolCall)) {
+      throw new Error("The local model returned an invalid design tool call.");
+    }
+    return {
+      toolCall: sanitizeToolCall(toolCall),
+      message:
+        typeof parsed.message === "string" && parsed.message.trim()
+          ? parsed.message.trim()
+          : "I extracted the requested design update.",
+    };
+  } catch (error) {
+    await logAiError(
+      "stairs-design-copilot-output-validation",
+      options.model?.trim() || "llama3.2",
+      error,
+    );
+    throw error;
   }
-  return {
-    toolCall: sanitizeToolCall(toolCall),
-    message:
-      typeof parsed.message === "string" && parsed.message.trim()
-        ? parsed.message.trim()
-        : "I extracted the requested design update.",
-  };
 }
 
 export async function runOfflineDesignRequest(

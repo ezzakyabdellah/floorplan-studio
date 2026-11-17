@@ -15,6 +15,10 @@
       ]
     },
     "fs:default",
+    "fs:allow-open",
+    "fs:allow-applocaldata-read",
+    "fs:allow-applocaldata-write",
+    "fs:allow-applocaldata-write-recursive",
     {
       "identifier": "fs:allow-read-text-file",
       "allow": [
