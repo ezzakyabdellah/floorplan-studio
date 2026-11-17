@@ -249,6 +249,136 @@ function appendFlightProfile(
   return [endX, endY];
 }
 
+function addRailingIllustration(
+  commands: SheetCommand[],
+  project: ProjectState,
+  flights: FlightLayout[],
+  scale: number,
+  startX: number,
+  startY: number,
+  landingLength: number,
+) {
+  const { stairParams, calculatedMetrics, units } = project;
+  const railHeight = 25;
+  const segments: Array<{
+    kind: "flight" | "landing";
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    realLength: number;
+    profileStartY: number;
+    flight?: FlightLayout;
+  }> = [];
+  let profileX = startX;
+  let profileY = startY;
+  let totalScreenLength = 0;
+
+  flights.forEach((flight, index) => {
+    const runPx = flight.run * scale;
+    const risePx = flight.rise * scale;
+    const flightScreenLength = Math.hypot(runPx, risePx);
+    const nx = flightScreenLength > 0 ? -risePx / flightScreenLength : 0;
+    const ny = flightScreenLength > 0 ? -runPx / flightScreenLength : -1;
+    const segment = {
+      kind: "flight" as const,
+      x1: profileX + nx * railHeight,
+      y1: profileY + ny * railHeight,
+      x2: profileX + runPx + nx * railHeight,
+      y2: profileY - risePx + ny * railHeight,
+      realLength: Math.hypot(flight.run, flight.rise),
+      profileStartY: profileY,
+      flight,
+    };
+    segments.push(segment);
+    totalScreenLength += Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
+    profileX += runPx;
+    profileY -= risePx;
+
+    if (index < flights.length - 1) {
+      const landingPx = landingLength * scale;
+      const landingSegment = {
+        kind: "landing" as const,
+        x1: profileX,
+        y1: profileY - railHeight,
+        x2: profileX + landingPx,
+        y2: profileY - railHeight,
+        realLength: landingLength,
+        profileStartY: profileY,
+      };
+      segments.push(landingSegment);
+      totalScreenLength += landingPx;
+      profileX += landingPx;
+    }
+  });
+
+  for (const segment of segments) {
+    line(commands, segment.x1, segment.y1, segment.x2, segment.y2, ACCENT, 2.2);
+  }
+  if (segments.length > 0) {
+    const first = segments[0];
+    const last = segments[segments.length - 1];
+    line(commands, first.x1, first.y1, first.x1, first.y1 + railHeight, ACCENT, 1.5);
+    line(commands, last.x2, last.y2, last.x2, last.y2 + railHeight, ACCENT, 1.5);
+  }
+
+  const count = calculatedMetrics.balusterCount;
+  const drawCount = Math.min(count, 120);
+  const railRun = calculatedMetrics.balusterRailRun;
+  if (count <= 0 || drawCount <= 0 || railRun <= 0) return;
+  const actualGap =
+    (railRun - count * stairParams.balusterThickness) / (count + 1);
+  const sampleIndices = Array.from({ length: drawCount }, (_, index) =>
+    drawCount <= 1
+      ? 0
+      : Math.round((index * (count - 1)) / (drawCount - 1)),
+  );
+
+  for (const index of sampleIndices) {
+    let distance =
+      actualGap +
+      stairParams.balusterThickness / 2 +
+      index * (actualGap + stairParams.balusterThickness);
+    let cumulative = 0;
+    const segment = segments.find((item) => {
+      const within = distance <= cumulative + item.realLength;
+      if (!within) cumulative += item.realLength;
+      return within;
+    });
+    if (!segment || segment.realLength <= 0) continue;
+    const t = Math.max(
+      0,
+      Math.min(1, (distance - cumulative) / segment.realLength),
+    );
+    const x = segment.x1 + (segment.x2 - segment.x1) * t;
+    const y = segment.y1 + (segment.y2 - segment.y1) * t;
+    let footY = segment.profileStartY;
+    if (segment.kind === "flight" && segment.flight) {
+      const step = Math.min(
+        segment.flight.treadCount,
+        Math.floor(t * segment.flight.treadCount),
+      );
+      footY -=
+        step *
+        ((segment.flight.rise * scale) / segment.flight.riserCount);
+    }
+    if (footY > y) {
+      line(commands, x, y, x, footY, "#0891b2", 1.15);
+    }
+  }
+
+  text(
+    commands,
+    startX + totalScreenLength / 2,
+    startY - (stairParams.totalRise * scale) - railHeight - 8,
+    `RAILING · ${calculatedMetrics.balusterCount} BALUSTERS · ${formatLength(calculatedMetrics.balusterClearGap, units)} CLEAR`,
+    8.5,
+    ACCENT,
+    "bold",
+    "middle",
+  );
+}
+
 function addSideElevation(
   commands: SheetCommand[],
   project: ProjectState,
@@ -313,6 +443,15 @@ function addSideElevation(
     width: 2.25,
     fill: "none",
   });
+  addRailingIllustration(
+    commands,
+    project,
+    flights,
+    scale,
+    left,
+    bottom,
+    landing,
+  );
   line(commands, left - 7, bottom + 1, left + run + 24, bottom + 1, MUTED, 1);
   line(commands, left + run + 20, bottom + 6, left + run + 20, bottom - rise - 20, MUTED, 1);
   horizontalDimension(

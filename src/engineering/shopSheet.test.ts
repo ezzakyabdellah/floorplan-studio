@@ -24,6 +24,8 @@ describe("dynamic 2D shop sheet", () => {
     expect(svg).toContain("WIDTH 36 in");
     expect(svg).toContain("RAILING 170 9/16 in");
     expect(svg).toContain("14 equal risers");
+    expect(svg).toContain("BALUSTERS");
+    expect(svg).toContain("#0891b2");
   });
 
   it("uses updated project state for dimensions and workshop notes", () => {
