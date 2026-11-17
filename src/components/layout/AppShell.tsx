@@ -15,6 +15,7 @@ import {
   PanelsTopLeft,
   PencilRuler,
   Plus,
+  Ruler,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -690,9 +691,11 @@ function ViewSwitcher() {
 function TopBar({
   notify,
   onOpenBlueprint,
+  onOpenStairs,
 }: {
   notify: Notify;
   onOpenBlueprint: () => void;
+  onOpenStairs: () => void;
 }) {
   const walls = useFloorPlanStore((state) => state.walls);
   const openings = useFloorPlanStore((state) => state.openings);
@@ -818,6 +821,14 @@ function TopBar({
           <ImagePlus className="h-3.5 w-3.5" />
           <span className="hidden md:inline">Import Blueprint</span>
         </button>
+        <button
+          type="button"
+          onClick={onOpenStairs}
+          className="flex items-center gap-1.5 rounded-lg border border-accent/20 bg-accent/[0.06] px-2 py-1.5 text-[11px] font-medium text-accent transition hover:bg-accent/15"
+        >
+          <Ruler className="h-3.5 w-3.5" />
+          <span className="hidden lg:inline">Stairs &amp; Ladders</span>
+        </button>
       </div>
 
       <div className="ml-auto flex items-center gap-3">
@@ -862,7 +873,11 @@ function Toast({ toast }: { toast: ToastState }) {
   );
 }
 
-export function AppShell() {
+export function AppShell({
+  onOpenStairs,
+}: {
+  onOpenStairs: () => void;
+}) {
   const activeView = useFloorPlanStore((state) => state.activeView);
   const setActiveTool = useFloorPlanStore((state) => state.setActiveTool);
   const setActiveView = useFloorPlanStore((state) => state.setActiveView);
@@ -969,7 +984,11 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-shell text-slate-200">
-      <TopBar notify={notify} onOpenBlueprint={openImporter} />
+      <TopBar
+        notify={notify}
+        onOpenBlueprint={openImporter}
+        onOpenStairs={onOpenStairs}
+      />
       <div className="flex min-h-0 flex-1">
         <Sidebar />
         <main className="relative min-h-0 min-w-0 flex-1 bg-[#0a0d12]">
