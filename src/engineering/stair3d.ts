@@ -249,12 +249,13 @@ export function buildStair3DLayout(project: ProjectState): Stair3DLayout {
   }
 
   const gap = width * 0.12;
-  const landingStartX = -landingLength / 2;
-  const landingEndX = landingLength / 2;
+  const landingStartX = 0;
+  const landingEndX = landingLength;
   const firstZ = -(width + gap) / 2;
   const secondZ = (width + gap) / 2;
   const firstStartX = landingStartX - firstRun;
-  const secondEndX = landingEndX - secondRun;
+  const secondStartX = landingStartX;
+  const secondEndX = secondStartX - secondRun;
   flights.push(
     {
       id: "flight-1",
@@ -268,7 +269,7 @@ export function buildStair3DLayout(project: ProjectState): Stair3DLayout {
     },
     {
       id: "flight-2",
-      start: { x: landingEndX, y: firstRise, z: secondZ },
+      start: { x: secondStartX, y: firstRise, z: secondZ },
       direction: { x: -1, z: 0 },
       run: secondRun,
       rise: secondRise,
@@ -278,7 +279,7 @@ export function buildStair3DLayout(project: ProjectState): Stair3DLayout {
     },
   );
   landings.push({
-    center: { x: 0, y: firstRise, z: 0 },
+    center: { x: landingLength / 2, y: firstRise, z: 0 },
     length: landingLength,
     width: width * 2 + gap,
   });
@@ -289,12 +290,13 @@ export function buildStair3DLayout(project: ProjectState): Stair3DLayout {
     walkPath: [
       { x: firstStartX, y: 0, z: firstZ },
       { x: landingStartX, y: firstRise, z: firstZ },
-      { x: 0, y: firstRise, z: 0 },
-      { x: landingEndX, y: firstRise, z: secondZ },
+      { x: landingLength / 2, y: firstRise, z: firstZ },
+      { x: landingLength / 2, y: firstRise, z: secondZ },
+      { x: secondStartX, y: firstRise, z: secondZ },
       { x: secondEndX, y: totalRise, z: secondZ },
     ],
     bounds: {
-      minX: firstStartX,
+      minX: Math.min(firstStartX, secondEndX),
       maxX: landingEndX,
       minZ: -(width * 2 + gap) / 2,
       maxZ: (width * 2 + gap) / 2,

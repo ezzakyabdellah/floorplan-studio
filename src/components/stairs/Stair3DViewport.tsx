@@ -302,20 +302,21 @@ function SpiralRailing({
   layout: Stair3DLayout;
   project: ProjectState;
 }) {
-  const radius = projectUnitsToFeet(project.stairParams.spiralRadius, project.units);
   const halfWidth = layout.width / 2;
   const railHeight = 3;
-  const railPoints = useMemo(
+  const railPaths = useMemo(
     () =>
-      layout.walkPath.map((point) => {
-        const radial = Math.hypot(point.x, point.z) || 1;
-        const scale = (radial + halfWidth) / radial;
-        return {
-          x: point.x * scale,
-          y: point.y + railHeight,
-          z: point.z * scale,
-        };
-      }),
+      [-1, 1].map((side) =>
+        layout.walkPath.map((point) => {
+          const radial = Math.hypot(point.x, point.z) || 1;
+          const scale = (radial + side * halfWidth) / radial;
+          return {
+            x: point.x * scale,
+            y: point.y + railHeight,
+            z: point.z * scale,
+          };
+        }),
+      ),
     [halfWidth, layout.walkPath],
   );
   const balusters = useMemo(() => {
@@ -327,37 +328,30 @@ function SpiralRailing({
       0,
       (run - count * thickness) / (count + 1),
     );
-    return Array.from({ length: Math.min(count, 120) }, (_, index) => {
-      const actualIndex =
-        count <= 120
-          ? index
-          : Math.round((index * (count - 1)) / 119);
-      const distance = gap + thickness / 2 + actualIndex * (gap + thickness);
-      const t = Math.max(0, Math.min(1, distance / run));
-      const pathIndex = Math.min(
-        layout.walkPath.length - 2,
-        Math.floor(t * (layout.walkPath.length - 1)),
-      );
-      const segmentT = t * (layout.walkPath.length - 1) - pathIndex;
-      const start = layout.walkPath[pathIndex];
-      const end = layout.walkPath[pathIndex + 1];
-      const center = {
-        x: start.x + (end.x - start.x) * segmentT,
-        y: start.y + (end.y - start.y) * segmentT,
-        z: start.z + (end.z - start.z) * segmentT,
-      };
-      const radial = Math.hypot(center.x, center.z) || 1;
-      const outerScale = (radial + halfWidth) / radial;
-      const foot = {
-        x: center.x * outerScale,
-        y: center.y,
-        z: center.z * outerScale,
-      };
-      return {
-        start: foot,
-        end: { ...foot, y: foot.y + railHeight },
-      };
-    });
+    const drawCount = Math.min(count, 120);
+    return [-1, 1].flatMap((side) =>
+      Array.from({ length: drawCount }, (_, index) => {
+        const actualIndex =
+          count <= drawCount
+            ? index
+            : Math.round((index * (count - 1)) / Math.max(1, drawCount - 1));
+        const distance =
+          gap + thickness / 2 + actualIndex * (gap + thickness);
+        const t = Math.max(0, Math.min(1, distance / run));
+        const center = walkPointAt(layout.walkPath, t);
+        const radial = Math.hypot(center.x, center.z) || 1;
+        const scale = (radial + side * halfWidth) / radial;
+        const foot = {
+          x: center.x * scale,
+          y: center.y,
+          z: center.z * scale,
+        };
+        return {
+          start: foot,
+          end: { ...foot, y: foot.y + railHeight },
+        };
+      }),
+    );
   }, [
     halfWidth,
     layout.walkPath,
@@ -367,17 +361,15 @@ function SpiralRailing({
   ]);
   return (
     <group>
-      <CurveRail points={railPoints} />
+      {railPaths.map((points, index) => (
+        <CurveRail key={`spiral-rail-${index}`} points={points} />
+      ))}
       {balusters.map((beam, index) => (
         <Beam
           key={`spiral-baluster-${index}`}
           beam={{ ...beam, radius: 0.025, color: "#0e7490" }}
         />
       ))}
-      <mesh position={[0, 0.04, 0]} receiveShadow>
-        <cylinderGeometry args={[radius - halfWidth, radius - halfWidth, 0.08, 24]} />
-        <meshStandardMaterial color="#8f7761" />
-      </mesh>
     </group>
   );
 }
@@ -439,6 +431,12 @@ function StaircaseModel({
             />
           ))
         : null}
+      {showStringers && layout.style === "spiral" ? (
+        <mesh position={[0, layout.totalRise / 2, 0]} castShadow receiveShadow>
+          <cylinderGeometry args={[0.16, 0.16, layout.totalRise, 24]} />
+          <meshStandardMaterial color="#8f7761" />
+        </mesh>
+      ) : null}
       {showRailing && layout.style === "spiral" ? (
         <SpiralRailing layout={layout} project={project} />
       ) : null}
