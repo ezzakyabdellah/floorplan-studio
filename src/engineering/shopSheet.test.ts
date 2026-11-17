@@ -45,6 +45,27 @@ describe("dynamic 2D shop sheet", () => {
     expect(notes.assemblyNotes.join(" ")).toContain("120 in");
   });
 
+  it("starts the pitched handrail at the stair's first tread in X", () => {
+    const project = createDefaultProjectState();
+    const document = createShopSheetDocument(
+      project,
+      defaultWorkshopNotes(project),
+    );
+    const handrail = document.commands.find(
+      (command) =>
+        command.kind === "line" &&
+        command.color === "#0e7490" &&
+        command.width === 2.2,
+    );
+    expect(handrail?.kind).toBe("line");
+    if (!handrail || handrail.kind !== "line") return;
+    expect(handrail.x1).toBe(40 + 62);
+    expect((handrail.y2 - handrail.y1) / (handrail.x2 - handrail.x1)).toBeCloseTo(
+      -project.stairParams.totalRise / project.stairParams.totalRun,
+      5,
+    );
+  });
+
   it("renders distinct L, U, and spiral plan geometry", () => {
     const base = createDefaultProjectState();
     const lShape = {

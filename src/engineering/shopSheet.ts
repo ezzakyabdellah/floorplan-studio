@@ -277,15 +277,15 @@ function addRailingIllustration(
   flights.forEach((flight, index) => {
     const runPx = flight.run * scale;
     const risePx = flight.rise * scale;
-    const flightScreenLength = Math.hypot(runPx, risePx);
-    const nx = flightScreenLength > 0 ? -risePx / flightScreenLength : 0;
-    const ny = flightScreenLength > 0 ? -runPx / flightScreenLength : -1;
     const segment = {
       kind: "flight" as const,
-      x1: profileX + nx * railHeight,
-      y1: profileY + ny * railHeight,
-      x2: profileX + runPx + nx * railHeight,
-      y2: profileY - risePx + ny * railHeight,
+      // Lift the rail vertically without shifting its lower endpoint in X.
+      // This keeps the handrail parallel to the pitch and aligned with the
+      // first tread instead of appearing to start a step late.
+      x1: profileX,
+      y1: profileY - railHeight,
+      x2: profileX + runPx,
+      y2: profileY - risePx - railHeight,
       realLength: Math.hypot(flight.run, flight.rise),
       profileStartY: profileY,
       flight,
