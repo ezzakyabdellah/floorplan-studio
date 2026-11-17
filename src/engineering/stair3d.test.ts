@@ -5,6 +5,7 @@ import {
   buildStair3DLayout,
   calculateHeadroomProfile,
   estimateStairBoundsFromSketch,
+  spiralPlanPoint,
 } from "./stair3d";
 
 describe("parametric stair 3D layout", () => {
@@ -33,6 +34,18 @@ describe("parametric stair 3D layout", () => {
         6,
       );
     }
+    const uLayout = buildStair3DLayout({
+      ...project,
+      stairParams: { ...project.stairParams, style: "u-shaped" },
+    });
+    const landingStartX =
+      uLayout.landings[0].center.x - uLayout.landings[0].length / 2;
+    const firstFlightEndX =
+      uLayout.flights[0].start.x +
+      uLayout.flights[0].direction.x * uLayout.flights[0].run;
+    expect(firstFlightEndX).toBeCloseTo(landingStartX, 6);
+    expect(uLayout.flights[1].start.x).toBeCloseTo(landingStartX, 6);
+    expect(uLayout.flights[1].direction.x).toBe(-1);
   });
 
   it("creates radial spiral treads and a continuous camera path", () => {
@@ -50,10 +63,33 @@ describe("parametric stair 3D layout", () => {
     expect(layout.spiralTreads).toHaveLength(
       project.calculatedMetrics.treadCount,
     );
+    expect(layout.spiralTreads[0].lowerElevation).toBe(0);
+    expect(layout.spiralTreads[0].elevation).toBeGreaterThan(
+      layout.spiralTreads[0].lowerElevation,
+    );
+    expect(layout.spiralTreads[0].endAngle).toBeCloseTo(
+      layout.spiralTreads[1].startAngle,
+      10,
+    );
     expect(layout.walkPath.length).toBeGreaterThan(48);
     expect(layout.walkPath[0].y).toBe(0);
     expect(layout.walkPath[layout.walkPath.length - 1]?.y).toBeCloseTo(
       layout.totalRise,
+      6,
+    );
+    const firstWalkPoint = layout.walkPath[0];
+    const firstTreadStart = spiralPlanPoint(
+      layout.spiralTreads[0].innerRadius,
+      layout.spiralTreads[0].startAngle,
+    );
+    const innerToCenterlineRatio =
+      layout.spiralTreads[0].innerRadius / (42 / 12);
+    expect(firstTreadStart.x).toBeCloseTo(
+      firstWalkPoint.x * innerToCenterlineRatio,
+      6,
+    );
+    expect(firstTreadStart.z).toBeCloseTo(
+      firstWalkPoint.z * innerToCenterlineRatio,
       6,
     );
   });

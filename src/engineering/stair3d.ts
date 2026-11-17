@@ -7,6 +7,14 @@ import type { Wall } from "../types/floorplan";
 
 export type Point3 = { x: number; y: number; z: number };
 
+/** Shared top-plan mapping for spiral treads, walk path, and railing. */
+export function spiralPlanPoint(radius: number, angle: number) {
+  return {
+    x: radius * Math.cos(angle),
+    z: radius * Math.sin(angle),
+  };
+}
+
 export type StairFlight3D = {
   id: string;
   start: Point3;
@@ -29,6 +37,7 @@ export type SpiralTread3D = {
   outerRadius: number;
   startAngle: number;
   endAngle: number;
+  lowerElevation: number;
   elevation: number;
 };
 
@@ -119,6 +128,7 @@ export function buildStair3DLayout(project: ProjectState): Stair3DLayout {
         outerRadius,
         startAngle: -Math.PI / 2 + index * anglePerTread,
         endAngle: -Math.PI / 2 + (index + 1) * anglePerTread,
+        lowerElevation: totalRise * (index / geometry.stepCount),
         elevation: totalRise * ((index + 1) / geometry.stepCount),
       })),
     );
@@ -131,10 +141,11 @@ export function buildStair3DLayout(project: ProjectState): Stair3DLayout {
       const angle =
         -Math.PI / 2 +
         progress * Math.PI * 2 * stairParams.spiralTurns;
+      const planPoint = spiralPlanPoint(radius, angle);
       return {
-        x: radius * Math.cos(angle),
+        x: planPoint.x,
         y: totalRise * progress,
-        z: radius * Math.sin(angle),
+        z: planPoint.z,
       };
     });
     return {

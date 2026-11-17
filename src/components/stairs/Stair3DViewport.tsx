@@ -5,6 +5,7 @@ import * as THREE from "three";
 import {
   Box,
   Camera,
+  Download,
   Eye,
   Footprints,
   LoaderCircle,
@@ -18,6 +19,7 @@ import {
   buildStair3DLayout,
   calculateHeadroomProfile,
   estimateStairBoundsFromSketch,
+  spiralPlanPoint,
   type Beam3D,
   type Point3,
   type Stair3DLayout,
@@ -35,6 +37,7 @@ import {
   type VisionSource,
 } from "../../services/visionModelService";
 import { logAiError, logAiOutput } from "../../services/aiLog";
+import { exportViewportPng } from "../../engineering/viewportExport";
 import type { ProjectState } from "../../engineering/types";
 import { cn } from "../../utils/cn";
 
@@ -241,34 +244,71 @@ function SpiralTread({
       const angle =
         tread.startAngle +
         ((tread.endAngle - tread.startAngle) * index) / segments;
-      const point = [
-        tread.outerRadius * Math.cos(angle),
-        tread.outerRadius * Math.sin(angle),
-      ] as const;
-      if (index === 0) result.moveTo(point[0], point[1]);
-      else result.lineTo(point[0], point[1]);
+      const point = spiralPlanPoint(tread.outerRadius, angle);
+      if (index === 0) result.moveTo(point.x, point.z);
+      else result.lineTo(point.x, point.z);
     }
     for (let index = segments; index >= 0; index -= 1) {
       const angle =
         tread.startAngle +
         ((tread.endAngle - tread.startAngle) * index) / segments;
-      result.lineTo(
-        tread.innerRadius * Math.cos(angle),
-        tread.innerRadius * Math.sin(angle),
-      );
+      const point = spiralPlanPoint(tread.innerRadius, angle);
+      result.lineTo(point.x, point.z);
     }
     result.closePath();
     return result;
   }, [tread]);
   return (
     <mesh
-      position={[0, tread.elevation - thickness, 0]}
-      rotation={[-Math.PI / 2, 0, 0]}
+      position={[0, tread.elevation, 0]}
+      rotation={[Math.PI / 2, 0, 0]}
       castShadow
       receiveShadow
     >
       <extrudeGeometry args={[shape, { depth: thickness, bevelEnabled: false, steps: 1 }]} />
-      <meshStandardMaterial color="#a4774b" roughness={0.84} />
+      <meshStandardMaterial
+        color="#a4774b"
+        roughness={0.84}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
+
+function SpiralRiser({ tread }: { tread: Stair3DLayout["spiralTreads"][number] }) {
+  const geometry = useMemo(() => {
+    const innerStart = spiralPlanPoint(tread.innerRadius, tread.startAngle);
+    const outerStart = spiralPlanPoint(tread.outerRadius, tread.startAngle);
+    const vertices = [
+      innerStart.x,
+      tread.lowerElevation,
+      innerStart.z,
+      outerStart.x,
+      tread.lowerElevation,
+      outerStart.z,
+      outerStart.x,
+      tread.elevation,
+      outerStart.z,
+      innerStart.x,
+      tread.elevation,
+      innerStart.z,
+    ];
+    const result = new THREE.BufferGeometry();
+    result.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(vertices, 3),
+    );
+    result.setIndex([0, 1, 2, 0, 2, 3]);
+    result.computeVertexNormals();
+    return result;
+  }, [tread]);
+  return (
+    <mesh geometry={geometry} castShadow>
+      <meshStandardMaterial
+        color="#d1b28e"
+        roughness={0.9}
+        side={THREE.DoubleSide}
+      />
     </mesh>
   );
 }
@@ -292,6 +332,41 @@ function CurveRail({
     <mesh geometry={geometry} castShadow>
       <meshStandardMaterial color={color} roughness={0.65} />
     </mesh>
+  );
+}
+
+function SpiralStringers({ layout }: { layout: Stair3DLayout }) {
+  const beams = useMemo(
+    () =>
+      [0, 1].flatMap((side) =>
+        layout.spiralTreads.map((tread) => {
+          const radius = side === 0 ? tread.innerRadius : tread.outerRadius;
+          const start = spiralPlanPoint(radius, tread.startAngle);
+          const end = spiralPlanPoint(radius, tread.endAngle);
+          return {
+            start: {
+              x: start.x,
+              y: tread.lowerElevation - 0.06,
+              z: start.z,
+            },
+            end: {
+              x: end.x,
+              y: tread.elevation - 0.06,
+              z: end.z,
+            },
+            radius: 0.1,
+            color: "#5b5144",
+          };
+        }),
+      ),
+    [layout.spiralTreads],
+  );
+  return (
+    <group>
+      {beams.map((beam, index) => (
+        <Beam key={`spiral-stringer-${index}`} beam={beam} />
+      ))}
+    </group>
   );
 }
 
@@ -362,7 +437,11 @@ function SpiralRailing({
   return (
     <group>
       {railPaths.map((points, index) => (
-        <CurveRail key={`spiral-rail-${index}`} points={points} />
+        <CurveRail
+          key={`spiral-rail-${index}`}
+          points={points}
+          color="#245b78"
+        />
       ))}
       {balusters.map((beam, index) => (
         <Beam
@@ -424,18 +503,20 @@ function StaircaseModel({
         : null}
       {showTreads
         ? layout.spiralTreads.map((tread, index) => (
-            <SpiralTread
-              key={`spiral-tread-${index}`}
-              tread={tread}
-              thickness={landingThickness}
-            />
+            <group key={`spiral-step-${index}`}>
+              <SpiralTread tread={tread} thickness={landingThickness} />
+              <SpiralRiser tread={tread} />
+            </group>
           ))
         : null}
       {showStringers && layout.style === "spiral" ? (
-        <mesh position={[0, layout.totalRise / 2, 0]} castShadow receiveShadow>
-          <cylinderGeometry args={[0.16, 0.16, layout.totalRise, 24]} />
-          <meshStandardMaterial color="#8f7761" />
-        </mesh>
+        <group>
+          <mesh position={[0, layout.totalRise / 2, 0]} castShadow receiveShadow>
+            <cylinderGeometry args={[0.16, 0.16, layout.totalRise + 0.25, 24]} />
+            <meshStandardMaterial color="#8f7761" />
+          </mesh>
+          <SpiralStringers layout={layout} />
+        </group>
       ) : null}
       {showRailing && layout.style === "spiral" ? (
         <SpiralRailing layout={layout} project={project} />
@@ -789,7 +870,10 @@ export function Stair3DViewport() {
   const [sketchProposal, setSketchProposal] =
     useState<SketchProposal | null>(null);
   const [sketchApplied, setSketchApplied] = useState(false);
+  const [exportingView, setExportingView] = useState(false);
+  const [exportMessage, setExportMessage] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stairLayout = useMemo(() => buildStair3DLayout(project), [project]);
   const headroom = useMemo(
     () => calculateHeadroomProfile(project, stairLayout, 40),
@@ -851,6 +935,22 @@ export function Stair3DViewport() {
     setSketchApplied(true);
   };
 
+  const exportView = async () => {
+    if (!canvasRef.current || exportingView) return;
+    setExportingView(true);
+    setExportMessage(null);
+    try {
+      const path = await exportViewportPng(canvasRef.current);
+      if (path) setExportMessage(`3D view exported to ${path}.`);
+    } catch (error) {
+      setExportMessage(
+        error instanceof Error ? error.message : "Could not export the 3D view.",
+      );
+    } finally {
+      setExportingView(false);
+    }
+  };
+
   const headroomText =
     project.stairParams.headroomClearance === null
       ? "Not measured"
@@ -873,7 +973,20 @@ export function Stair3DViewport() {
             Live {project.projectType} geometry · orbit or walk the model
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void exportView()}
+            disabled={exportingView}
+            className="flex items-center gap-1.5 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-[10px] text-slate-300 hover:border-accent/30 hover:text-accent disabled:opacity-40"
+          >
+            {exportingView ? (
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5" />
+            )}
+            Export PNG
+          </button>
           <div className="flex rounded-lg border border-line bg-black/20 p-0.5">
             {(
               [
@@ -942,7 +1055,10 @@ export function Stair3DViewport() {
             shadows
             dpr={[1, 1.75]}
             camera={{ position: [16, 12, 20], fov: 48, near: 0.1, far: 500 }}
-            gl={{ antialias: true, alpha: false }}
+            gl={{ antialias: true, alpha: false, preserveDrawingBuffer: true }}
+            onCreated={({ gl }) => {
+              canvasRef.current = gl.domElement;
+            }}
           >
             <Suspense fallback={null}>
               <Scene
@@ -965,6 +1081,11 @@ export function Stair3DViewport() {
             </div>
             <p className="mt-1">Drag to orbit · scroll to zoom · changes update live</p>
           </div>
+          {exportMessage ? (
+            <div className="absolute bottom-3 left-3 rounded-lg border border-white/50 bg-white/85 px-2.5 py-1.5 text-[9px] text-slate-700 shadow">
+              {exportMessage}
+            </div>
+          ) : null}
         </section>
 
         <aside className="min-h-0 space-y-3 overflow-y-auto">
@@ -1163,6 +1284,30 @@ export function Stair3DViewport() {
               : `${project.ladderParams.ladderType} ladder · ${formatLength(project.ladderParams.workingHeight, project.units)} working height`}
             <br />
             Mesh dimensions update directly from ProjectState. Schematic model is not a structural design.
+          </section>
+          <section className="rounded-xl border border-line/70 bg-black/20 p-3">
+            <h3 className="mb-2 text-[9px] font-semibold uppercase tracking-wider text-slate-400">
+              Component colors
+            </h3>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[9px] text-slate-500">
+              {[
+                ["#a4774b", "Treads"],
+                ["#d1b28e", "Risers"],
+                ["#514235", "Stringers"],
+                ["#f59e0b", "Tread supports"],
+                ["#245b78", "Handrails"],
+                ["#0e7490", "Balusters"],
+                ["#ef4444", "Low headroom zones"],
+              ].map(([color, label]) => (
+                <div key={label} className="flex items-center gap-1.5">
+                  <span
+                    className="h-2.5 w-2.5 rounded-sm"
+                    style={{ backgroundColor: color }}
+                  />
+                  {label}
+                </div>
+              ))}
+            </div>
           </section>
         </aside>
       </div>
