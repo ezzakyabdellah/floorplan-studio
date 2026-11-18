@@ -616,7 +616,7 @@ function Sidebar() {
         />
         <ToolButton
           icon={Sparkles}
-          label="AI Inspector"
+          label="AI Assistant"
           shortcut="A"
           active={aiOpen}
           onClick={toggleAi}

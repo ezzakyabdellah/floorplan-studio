@@ -19,6 +19,8 @@ export type StreamOptions = {
   model?: string;
   signal?: AbortSignal;
   onChunk?: (chunk: string) => void;
+  numPredict?: number;
+  numContext?: number;
   /** Log label only; this value is never sent to the local model. */
   operation?: string;
 };
@@ -235,7 +237,11 @@ export async function generateLocalJson(
         prompt,
         stream: false,
         format,
-        options: { temperature: 0.1, num_predict: 512, num_ctx: 4096 },
+        options: {
+          temperature: 0.1,
+          num_predict: options.numPredict ?? 512,
+          num_ctx: options.numContext ?? 4096,
+        },
       }),
       signal: controller.signal,
     });

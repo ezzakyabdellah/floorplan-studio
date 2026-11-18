@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Cpu,
+  Check,
   Download,
   Eraser,
   Loader2,
@@ -23,12 +24,20 @@ import {
 import { runComplianceChecks } from "../../utils/spatialRules";
 import { cn } from "../../utils/cn";
 import { exportAiLog, getAiLogLocation } from "../../services/aiLog";
+import {
+  generateFloorPlanFromPrompt,
+  type GeneratedFloorPlan,
+} from "../../services/floorPlanAiService";
 
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  plan?: GeneratedFloorPlan;
+  applied?: boolean;
 };
+
+type AssistantMode = "ask" | "generate";
 
 const createMessageId = () =>
   `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -58,11 +67,14 @@ export function LocalAiAssistant() {
   const openings = useFloorPlanStore((state) => state.openings);
   const open = useFloorPlanStore((state) => state.aiOpen);
   const setAiOpen = useFloorPlanStore((state) => state.setAiOpen);
+  const importPlan = useFloorPlanStore((state) => state.importPlan);
+  const setActiveView = useFloorPlanStore((state) => state.setActiveView);
 
   const [status, setStatus] = useState<OllamaStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const [model, setModel] = useState("llama3.2");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [mode, setMode] = useState<AssistantMode>("ask");
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -231,6 +243,82 @@ export function LocalAiAssistant() {
     );
   };
 
+  const handleGenerate = async () => {
+    const request = draft.trim();
+    if (!request || streaming || !status?.online) return;
+    setDraft("");
+    setError(null);
+
+    const userMessage: ChatMessage = {
+      id: createMessageId(),
+      role: "user",
+      content: `Generate a floor plan: ${request}`,
+    };
+    const assistantId = createMessageId();
+    setMessages((current) => [
+      ...current,
+      userMessage,
+      {
+        id: assistantId,
+        role: "assistant",
+        content: "Designing a draft from your requirements…",
+      },
+    ]);
+    setStreaming(true);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const plan = await generateFloorPlanFromPrompt(request, {
+        model,
+        signal: controller.signal,
+      });
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantId
+            ? {
+                ...message,
+                content: `Draft ready: ${plan.name}. Review the geometry, then apply it to replace the current plan.`,
+                plan,
+              }
+            : message,
+        ),
+      );
+    } catch (generationError) {
+      const aborted = controller.signal.aborted;
+      const detail =
+        generationError instanceof Error
+          ? generationError.message
+          : "Could not generate the floor plan.";
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantId
+            ? {
+                ...message,
+                content: aborted
+                  ? "Generation stopped."
+                  : `Could not generate the plan: ${detail}`,
+              }
+            : message,
+        ),
+      );
+      if (!aborted) setError(detail);
+    } finally {
+      abortRef.current = null;
+      setStreaming(false);
+    }
+  };
+
+  const handleApplyPlan = (messageId: string, plan: GeneratedFloorPlan) => {
+    importPlan(plan.walls, plan.openings, { replace: true, name: plan.name });
+    setActiveView("2d");
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === messageId ? { ...message, applied: true } : message,
+      ),
+    );
+  };
+
   const handleClear = () => {
     if (streaming) return;
     setMessages([]);
@@ -287,7 +375,7 @@ export function LocalAiAssistant() {
           </div>
           <div>
             <h2 className="text-sm font-semibold text-slate-100">
-              Local AI Inspector
+              AI Floor Plan Assistant
             </h2>
             <p className="mt-0.5 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.14em] text-slate-500">
               <span
@@ -347,6 +435,27 @@ export function LocalAiAssistant() {
       </div>
 
       <div className="space-y-3 border-b border-line px-4 py-3">
+        <div className="grid grid-cols-2 rounded-lg border border-line bg-black/20 p-0.5">
+          {([
+            { id: "ask", label: "Ask about plan" },
+            { id: "generate", label: "Generate plan" },
+          ] as const).map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => setMode(option.id)}
+              aria-pressed={mode === option.id}
+              className={cn(
+                "rounded-md px-2 py-1.5 text-[10px] font-medium transition",
+                mode === option.id
+                  ? "bg-violet-500/15 text-violet-200"
+                  : "text-slate-500 hover:text-slate-200",
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
         <div className="flex items-center gap-2">
           <label className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-line bg-black/25 px-2.5 py-1.5">
             <Cpu className="h-3.5 w-3.5 shrink-0 text-slate-500" />
@@ -385,7 +494,8 @@ export function LocalAiAssistant() {
             </div>
             <p className="mt-1.5 text-amber-100/70">
               Start Ollama, pull a model, then refresh this panel. The offline
-              Audit button still runs the deterministic rule engine.
+              Audit button still runs the deterministic rule engine; AI
+              questions and generation need a local model.
             </p>
             <div className="mt-2 space-y-1 rounded-lg border border-amber-500/15 bg-black/25 p-2 font-mono text-[10px] text-amber-100/80">
               <p>ollama run llama3.2</p>
@@ -414,14 +524,17 @@ export function LocalAiAssistant() {
         {messages.length === 0 ? (
           <div className="rounded-xl border border-line/70 bg-black/20 p-3.5 text-[11px] leading-relaxed text-slate-400">
             <p className="font-medium text-slate-300">
-              Ask about this floor plan
+              {mode === "generate" ? "Describe a floor plan" : "Ask about this floor plan"}
             </p>
             <p className="mt-1">
-              Run a full audit or ask a focused question such as “Is the
-              entry door wide enough?” or “Which walls look disconnected?”
+              {mode === "generate"
+                ? "Try “A 30 by 24 foot home with two bedrooms, one bath, and an open kitchen and living room.” The AI will draft editable walls and openings."
+                : "Run a full audit or ask a focused question such as “Is the entry door wide enough?” or “Which walls look disconnected?”"}
             </p>
             <p className="mt-2 text-[10px] text-slate-500">
-              Requests go only to the Ollama server on this machine.
+              {mode === "generate"
+                ? "Generated plans are checked locally and only replace your current plan when you apply them."
+                : "Requests go only to the Ollama server on this machine."}
             </p>
           </div>
         ) : null}
@@ -443,6 +556,39 @@ export function LocalAiAssistant() {
               {message.content ||
                 (streaming ? "Thinking locally…" : "No response.")}
             </p>
+            {message.plan ? (
+              <div className="mt-2.5 rounded-lg border border-violet-400/20 bg-violet-500/[0.06] p-2.5">
+                <div className="flex items-center justify-between gap-2 text-[10px]">
+                  <span className="font-medium text-violet-200">
+                    {message.plan.walls.length} walls · {message.plan.openings.length} openings
+                  </span>
+                  <span className="text-slate-500">Editable draft</span>
+                </div>
+                <p className="mt-1 text-[9px] leading-relaxed text-slate-500">
+                  Applying replaces the current walls and openings.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => handleApplyPlan(message.id, message.plan!)}
+                  disabled={message.applied}
+                  className={cn(
+                    "mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-[10px] font-medium transition",
+                    message.applied
+                      ? "border-emerald-500/20 bg-emerald-500/[0.06] text-emerald-300"
+                      : "border-violet-400/25 bg-violet-500/10 text-violet-100 hover:bg-violet-500/20",
+                  )}
+                >
+                  {message.applied ? (
+                    <>
+                      <Check className="h-3 w-3" />
+                      Applied to canvas
+                    </>
+                  ) : (
+                    "Replace current plan"
+                  )}
+                </button>
+              </div>
+            ) : null}
           </div>
         ))}
       </div>
@@ -455,13 +601,16 @@ export function LocalAiAssistant() {
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                handleSend();
+                if (mode === "generate") void handleGenerate();
+                else handleSend();
               }
             }}
             rows={2}
             placeholder={
               status?.online
-                ? "Ask about circulation, egress, or layout…"
+                ? mode === "generate"
+                  ? "Describe rooms, dimensions, and layout preferences…"
+                  : "Ask about circulation, egress, or layout…"
                 : "Start Ollama to chat with the local model"
             }
             disabled={!status?.online || streaming}
@@ -480,7 +629,9 @@ export function LocalAiAssistant() {
           ) : (
             <button
               type="button"
-              onClick={handleSend}
+              onClick={() =>
+                mode === "generate" ? void handleGenerate() : handleSend()
+              }
               disabled={!canChat || !draft.trim()}
               className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-lg border border-accent/25 bg-accent/10 text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-40"
               aria-label="Send question"
@@ -489,7 +640,11 @@ export function LocalAiAssistant() {
               {checking ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
-                <Send className="h-3.5 w-3.5" />
+                mode === "generate" ? (
+                  <Sparkles className="h-3.5 w-3.5" />
+                ) : (
+                  <Send className="h-3.5 w-3.5" />
+                )
               )}
             </button>
           )}
