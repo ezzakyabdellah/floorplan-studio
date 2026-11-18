@@ -185,13 +185,10 @@ export function parseGeneratedFloorPlan(text: string): GeneratedFloorPlan {
 
 function buildPrompt(request: string) {
   return [
-    "You are a floor-plan design assistant. Create an editable 2D architectural floor plan from the user's requirements.",
-    "All coordinates and dimensions are in feet on an X/Y plane. Use straight wall segments. Return a complete, connected, closed outer perimeter, plus sensible interior partition walls where requested.",
-    "Add door openings for room access and windows on suitable exterior walls. Each opening references a zero-based wallIndex in the walls array, has a position from 0 to 1 along that wall, and a width in feet.",
-    "Keep dimensions practical: wall coordinates between -100 and 100 ft, wall lengths 1 to 200 ft, wall thickness 0.1 to 2 ft, wall height 4 to 20 ft, and opening widths 0.5 to 12 ft. Keep openings away from wall endpoints and do not add overlapping openings.",
-    "Use at most 40 walls and 64 openings. Do not include furniture. Return only JSON matching the requested schema. Do not add markdown.",
-    "",
-    `User requirements: ${request.trim()}`,
+    "Generate an editable floor plan from the user's requirements. Units are feet.",
+    "Use a closed outer boundary, connected interior walls, and sensible doors/windows. No furniture.",
+    "Return only schema JSON. Use zero-based wallIndex and position 0–1. Limits: coordinates ±100 ft, walls 1–200 ft, thickness 0.1–2 ft, height 4–20 ft, openings 0.5–12 ft; max 40 walls and 64 non-overlapping openings.",
+    `Request: ${request.trim()}`,
   ].join("\n");
 }
 
@@ -213,6 +210,7 @@ export async function generateFloorPlanFromPrompt(
       ...options,
       numPredict: options.numPredict ?? 3072,
       numContext: options.numContext ?? 8192,
+      timeoutMs: options.timeoutMs ?? 300_000,
       operation: options.operation ?? "floorplan-generation",
     },
     FLOOR_PLAN_SCHEMA,

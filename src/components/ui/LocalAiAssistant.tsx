@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useFloorPlanStore } from "../../store/floorPlanStore";
 import {
+  AI_TIMEOUT_RESPONSE_WINDOW_MS,
   DEFAULT_AI_MODELS,
   analyzeComplianceWithLLM,
   askPlanQuestion,
@@ -78,11 +79,26 @@ export function LocalAiAssistant() {
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [timeoutDeadline, setTimeoutDeadline] = useState<number | null>(null);
+  const [timeoutSecondsLeft, setTimeoutSecondsLeft] = useState(0);
   const [aiLogLocation, setAiLogLocation] = useState("ai-log.jsonl");
   const [exportingLog, setExportingLog] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
+  const timeoutDecisionRef = useRef<
+    ((continueWaiting: boolean) => void) | null
+  >(null);
+  const timeoutExpiredRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  const resolveTimeoutPrompt = (continueWaiting: boolean) => {
+    const respond = timeoutDecisionRef.current;
+    timeoutDecisionRef.current = null;
+    setTimeoutDeadline(null);
+    setTimeoutSecondsLeft(0);
+    if (!continueWaiting) abortRef.current?.abort();
+    respond?.(continueWaiting);
+  };
 
   const refreshStatus = useCallback(async () => {
     setChecking(true);
@@ -118,7 +134,23 @@ export function LocalAiAssistant() {
   }, [messages, streaming]);
 
   useEffect(() => {
-    return () => abortRef.current?.abort();
+    if (timeoutDeadline === null) return;
+    const updateCountdown = () => {
+      setTimeoutSecondsLeft(
+        Math.max(0, Math.ceil((timeoutDeadline - Date.now()) / 1000)),
+      );
+    };
+    updateCountdown();
+    const interval = globalThis.setInterval(updateCountdown, 250);
+    return () => globalThis.clearInterval(interval);
+  }, [timeoutDeadline]);
+
+  useEffect(() => {
+    return () => {
+      timeoutDecisionRef.current?.(false);
+      timeoutDecisionRef.current = null;
+      abortRef.current?.abort();
+    };
   }, []);
 
   const appendAssistantChunk = (id: string, chunk: string) => {
@@ -132,6 +164,7 @@ export function LocalAiAssistant() {
   };
 
   const stopStreaming = () => {
+    resolveTimeoutPrompt(false);
     abortRef.current?.abort();
     abortRef.current = null;
     setStreaming(false);
@@ -266,12 +299,22 @@ export function LocalAiAssistant() {
     ]);
     setStreaming(true);
 
+    timeoutExpiredRef.current = false;
     const controller = new AbortController();
     abortRef.current = controller;
     try {
       const plan = await generateFloorPlanFromPrompt(request, {
         model,
         signal: controller.signal,
+        onTimeout: (respond) => {
+          setAiOpen(true);
+          timeoutDecisionRef.current = respond;
+          setTimeoutDeadline(Date.now() + AI_TIMEOUT_RESPONSE_WINDOW_MS);
+        },
+        onTimeoutExpired: () => {
+          timeoutExpiredRef.current = true;
+          resolveTimeoutPrompt(false);
+        },
       });
       setMessages((current) =>
         current.map((message) =>
@@ -296,7 +339,9 @@ export function LocalAiAssistant() {
             ? {
                 ...message,
                 content: aborted
-                  ? "Generation stopped."
+                  ? timeoutExpiredRef.current
+                    ? "Generation canceled because there was no response to the timeout prompt."
+                    : "Generation stopped."
                   : `Could not generate the plan: ${detail}`,
               }
             : message,
@@ -304,6 +349,8 @@ export function LocalAiAssistant() {
       );
       if (!aborted) setError(detail);
     } finally {
+      resolveTimeoutPrompt(true);
+      timeoutExpiredRef.current = false;
       abortRef.current = null;
       setStreaming(false);
     }
@@ -426,8 +473,14 @@ export function LocalAiAssistant() {
           <button
             type="button"
             onClick={() => setAiOpen(false)}
+            disabled={timeoutDeadline !== null}
             className="rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-slate-200"
             aria-label="Close AI inspector"
+            title={
+              timeoutDeadline !== null
+                ? "Choose whether to cancel or keep waiting first"
+                : "Close AI inspector"
+            }
           >
             <X className="h-4 w-4" />
           </button>
@@ -515,6 +568,37 @@ export function LocalAiAssistant() {
             {error}
           </div>
         ) : null}
+        {timeoutDeadline !== null ? (
+          <div
+            className="rounded-lg border border-amber-400/25 bg-amber-500/[0.08] px-2.5 py-2.5 text-[10px] leading-relaxed text-amber-100"
+            role="alertdialog"
+            aria-label="Floor-plan generation timeout"
+          >
+            <p className="font-medium">
+              Generation is taking longer than expected. Should we cancel?
+            </p>
+            <p className="mt-1 text-amber-100/70">
+              It will be canceled in {timeoutSecondsLeft} seconds if you don’t
+              respond.
+            </p>
+            <div className="mt-2 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => resolveTimeoutPrompt(false)}
+                className="rounded-md border border-line px-2 py-1 text-slate-300 transition hover:bg-white/5"
+              >
+                Cancel request
+              </button>
+              <button
+                type="button"
+                onClick={() => resolveTimeoutPrompt(true)}
+                className="rounded-md border border-amber-300/30 bg-amber-300/10 px-2 py-1 text-amber-100 transition hover:bg-amber-300/20"
+              >
+                Keep waiting
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div
@@ -524,16 +608,16 @@ export function LocalAiAssistant() {
         {messages.length === 0 ? (
           <div className="rounded-xl border border-line/70 bg-black/20 p-3.5 text-[11px] leading-relaxed text-slate-400">
             <p className="font-medium text-slate-300">
-              {mode === "generate" ? "Describe a floor plan" : "Ask about this floor plan"}
+              {mode === "generate" ? "What space do you need?" : "Ask about this floor plan"}
             </p>
             <p className="mt-1">
               {mode === "generate"
-                ? "Try “A 30 by 24 foot home with two bedrooms, one bath, and an open kitchen and living room.” The AI will draft editable walls and openings."
+                ? "Example: “2-bedroom, 30×24 ft, open kitchen and living room.”"
                 : "Run a full audit or ask a focused question such as “Is the entry door wide enough?” or “Which walls look disconnected?”"}
             </p>
             <p className="mt-2 text-[10px] text-slate-500">
               {mode === "generate"
-                ? "Generated plans are checked locally and only replace your current plan when you apply them."
+                ? "Review the editable draft before applying it."
                 : "Requests go only to the Ollama server on this machine."}
             </p>
           </div>
@@ -609,7 +693,7 @@ export function LocalAiAssistant() {
             placeholder={
               status?.online
                 ? mode === "generate"
-                  ? "Describe rooms, dimensions, and layout preferences…"
+                  ? "e.g. 2-bedroom, 30×24 ft…"
                   : "Ask about circulation, egress, or layout…"
                 : "Start Ollama to chat with the local model"
             }

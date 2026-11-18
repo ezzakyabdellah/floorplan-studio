@@ -86,7 +86,7 @@ describe("AI floor-plan generation", () => {
     const body = JSON.parse(requests[0].body as string);
     expect(body.model).toBe("qwen2.5");
     expect(body.format.type).toBe("object");
-    expect(body.prompt).toContain("User requirements:");
+    expect(body.prompt).toContain("Request:");
     expect(body.options.num_predict).toBe(3072);
     expect(body.options.num_ctx).toBe(8192);
   });

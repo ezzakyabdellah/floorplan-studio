@@ -7,6 +7,7 @@ import { logAiError, logAiOutput } from "./aiLog";
 export const OLLAMA_BASE_URL = "http://localhost:11434";
 export const OLLAMA_GENERATE_URL = `${OLLAMA_BASE_URL}/api/generate`;
 export const DEFAULT_AI_MODELS = ["llama3.2", "qwen2.5", "mistral"];
+export const AI_TIMEOUT_RESPONSE_WINDOW_MS = 20_000;
 
 export type OllamaStatus = {
   online: boolean;
@@ -21,6 +22,11 @@ export type StreamOptions = {
   onChunk?: (chunk: string) => void;
   numPredict?: number;
   numContext?: number;
+  timeoutMs?: number;
+  /** Called when the request timeout is reached; choose whether to keep waiting. */
+  onTimeout?: (respond: (continueWaiting: boolean) => void) => void;
+  /** Called when no timeout decision was made within the response window. */
+  onTimeoutExpired?: () => void;
   /** Log label only; this value is never sent to the local model. */
   operation?: string;
 };
@@ -224,9 +230,56 @@ export async function generateLocalJson(
   const model = options.model?.trim() || "llama3.2";
   const operation = options.operation ?? "structured-local-generation";
   const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), 90_000);
+  let graceTimeout: ReturnType<typeof globalThis.setTimeout> | null = null;
+  const timeoutDecision = {
+    current: null as ((continueWaiting: boolean) => void) | null,
+  };
+  const clearGraceTimeout = () => {
+    if (graceTimeout !== null) {
+      globalThis.clearTimeout(graceTimeout);
+      graceTimeout = null;
+    }
+  };
+  const controllerAbortHandler = () => clearGraceTimeout();
+  controller.signal.addEventListener("abort", controllerAbortHandler);
+
+  const timeout = globalThis.setTimeout(() => {
+    if (controller.signal.aborted) return;
+    if (!options.onTimeout) {
+      controller.abort();
+      return;
+    }
+
+    let decisionMade = false;
+    const respond = (continueWaiting: boolean) => {
+      if (decisionMade) return;
+      decisionMade = true;
+      clearGraceTimeout();
+      timeoutDecision.current = null;
+      if (!continueWaiting) controller.abort();
+    };
+    timeoutDecision.current = respond;
+    graceTimeout = globalThis.setTimeout(() => {
+      try {
+        options.onTimeoutExpired?.();
+      } catch {
+        // The request must still be canceled if timeout UI cleanup fails.
+      }
+      respond(false);
+    }, AI_TIMEOUT_RESPONSE_WINDOW_MS);
+
+    try {
+      options.onTimeout(respond);
+    } catch {
+      respond(false);
+    }
+  }, options.timeoutMs ?? 90_000);
   const abortHandler = () => controller.abort();
-  options.signal?.addEventListener("abort", abortHandler);
+  if (options.signal?.aborted) {
+    controller.abort();
+  } else {
+    options.signal?.addEventListener("abort", abortHandler);
+  }
 
   try {
     const response = await aiFetch(OLLAMA_GENERATE_URL, {
@@ -266,6 +319,9 @@ export async function generateLocalJson(
     throw error;
   } finally {
     globalThis.clearTimeout(timeout);
+    timeoutDecision.current?.(true);
+    clearGraceTimeout();
+    controller.signal.removeEventListener("abort", controllerAbortHandler);
     options.signal?.removeEventListener("abort", abortHandler);
   }
 }

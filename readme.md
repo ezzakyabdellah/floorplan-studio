@@ -69,3 +69,15 @@ Execute this plan step-by-step. Use your agentic file editing, terminal executio
 4. Ensure all native Tauri file imports use valid Tauri v2 package routes (`@tauri-apps/api` / `@tauri-apps/plugin-fs`).
 
 Begin now.
+
+
+> **Note on Intel Integrated Graphics (iGPU):** By default, Ollama runs on the CPU for older Intel processors (such as 8th Gen Intel Core i7-U / UHD Graphics 620) because integrated graphics share system RAM and often perform slower than CPU inference. To force experimental GPU acceleration via Vulkan, set the following environment variables and restart Ollama:
+>
+> - **Windows (PowerShell):**
+>   ```powershell
+>   [Environment]::SetEnvironmentVariable("OLLAMA_VULKAN", "1", "User")
+>   [Environment]::SetEnvironmentVariable("OLLAMA_IGPU_ENABLE", "1", "User")
+>   ```
+> - **Linux (`systemd`):** Add `Environment="OLLAMA_VULKAN=1"` and `Environment="OLLAMA_IGPU_ENABLE=1"` via `sudo systemctl edit ollama` and restart the service.
+>
+> Verify with `ollama ps` while a model is running. If token speed (`--verbose`) is slower than CPU, remove these variables to revert to CPU mode.
