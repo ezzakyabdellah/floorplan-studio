@@ -37,6 +37,7 @@ import type {
 import { cn } from "../../utils/cn";
 import { WorkshopDrawings } from "./WorkshopDrawings";
 import { Stair3DViewport } from "./Stair3DViewport";
+import { ProductionTools } from "./ProductionTools";
 import {
   exportAiLog,
   getAiLogLocation,
@@ -210,7 +211,7 @@ function RampConverter({ units }: { units: EngineeringUnits }) {
 
 export function StairLadderStudio({ onBack }: Props) {
   const [activeTab, setActiveTab] = useState<
-    "calculator" | "model" | "drawings"
+    "calculator" | "model" | "drawings" | "production"
   >("calculator");
   const projectType = useProjectStore((state) => state.projectType);
   const units = useProjectStore((state) => state.units);
@@ -384,7 +385,7 @@ export function StairLadderStudio({ onBack }: Props) {
             Stairs &amp; Ladders
           </h1>
           <p className="text-[10px] text-slate-500">
-            Engineering studio · Phase 3
+            Engineering studio · Phase 4
           </p>
         </div>
         <nav className="ml-5 flex items-center rounded-lg border border-line bg-black/20 p-0.5">
@@ -393,6 +394,7 @@ export function StairLadderStudio({ onBack }: Props) {
               ["calculator", "Calculator"],
               ["model", "3D model"],
               ["drawings", "Shop drawings"],
+              ["production", "Workshop"],
             ] as const
           ).map(([tab, label]) => (
             <button
@@ -444,6 +446,8 @@ export function StairLadderStudio({ onBack }: Props) {
             <Stair3DViewport />
           ) : activeTab === "drawings" ? (
             <WorkshopDrawings status={status} model={model} />
+          ) : activeTab === "production" ? (
+            <ProductionTools status={status} model={model} />
           ) : (
           <div className="min-h-0 flex-1 overflow-y-auto p-4 lg:p-6">
           <div className="mx-auto max-w-5xl space-y-4">

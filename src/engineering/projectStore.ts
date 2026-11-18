@@ -159,6 +159,9 @@ export type ProjectStore = ProjectState & {
   ) => { applied: boolean; error?: string };
   auditBuildingCode: () => AuditReport;
   setUnits: (units: EngineeringUnits) => void;
+  loadProjectState: (
+    project: ProjectState,
+  ) => { applied: boolean; error?: string };
   resetProject: () => void;
 };
 
@@ -202,6 +205,43 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   auditBuildingCode: () => runBuildingCodeAudit(get()),
   setUnits: (units) => {
     get().updateDesignParameters({ units });
+  },
+  loadProjectState: (project) => {
+    try {
+      if (
+        !project ||
+        !["imperial", "metric"].includes(project.units) ||
+        !["staircase", "ladder"].includes(project.projectType) ||
+        typeof project.stairParams !== "object" ||
+        project.stairParams === null ||
+        typeof project.ladderParams !== "object" ||
+        project.ladderParams === null
+      ) {
+        throw new RangeError("Saved project has an unsupported format.");
+      }
+      const defaults = createDefaultProjectState(project.units);
+      const next = withMetrics({
+        projectType: project.projectType,
+        units: project.units,
+        stairParams: normalizeStairPatch(
+          defaults.stairParams,
+          project.stairParams,
+          project.units,
+        ),
+        ladderParams: normalizeLadderPatch(
+          defaults.ladderParams,
+          project.ladderParams,
+          project.units,
+        ),
+      });
+      set(next);
+      return { applied: true };
+    } catch (error) {
+      return {
+        applied: false,
+        error: error instanceof Error ? error.message : "Could not load project.",
+      };
+    }
   },
   resetProject: () => set(createDefaultProjectState()),
 }));

@@ -67,4 +67,31 @@ describe("unified project state", () => {
     expect(roundTrip.calculatedMetrics.stepCount).toBe(14);
     expect(roundTrip.stairParams.totalRise).toBe(108);
   });
+
+  it("loads a saved parameter snapshot and recalculates instead of trusting stored metrics", () => {
+    const saved = createDefaultProjectState();
+    const altered = {
+      ...saved,
+      stairParams: { ...saved.stairParams, totalRise: 120 },
+      calculatedMetrics: { ...saved.calculatedMetrics, stepCount: 999 },
+    };
+    const result = useProjectStore.getState().loadProjectState(altered);
+    expect(result.applied).toBe(true);
+    expect(useProjectStore.getState().stairParams.totalRise).toBe(120);
+    expect(useProjectStore.getState().calculatedMetrics.stepCount).not.toBe(999);
+  });
+
+  it("rejects invalid saved projects without replacing the current state", () => {
+    const before = useProjectStore.getState().stairParams.totalRise;
+    const invalid = {
+      ...createDefaultProjectState(),
+      stairParams: {
+        ...createDefaultProjectState().stairParams,
+        totalRise: Number.NaN,
+      },
+    };
+    const result = useProjectStore.getState().loadProjectState(invalid);
+    expect(result.applied).toBe(false);
+    expect(useProjectStore.getState().stairParams.totalRise).toBe(before);
+  });
 });
