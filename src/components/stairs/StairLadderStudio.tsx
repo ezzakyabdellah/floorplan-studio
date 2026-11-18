@@ -44,7 +44,7 @@ import {
   logAiError,
 } from "../../services/aiLog";
 
-type Props = { onBack: () => void };
+type Props = { onBack: () => void; backLabel?: string };
 
 function Metric({
   label,
@@ -209,7 +209,7 @@ function RampConverter({ units }: { units: EngineeringUnits }) {
   );
 }
 
-export function StairLadderStudio({ onBack }: Props) {
+export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
   const [activeTab, setActiveTab] = useState<
     "calculator" | "model" | "drawings" | "production"
   >("calculator");
@@ -374,7 +374,7 @@ export function StairLadderStudio({ onBack }: Props) {
           className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[11px] text-slate-300 transition hover:border-accent/30 hover:text-accent"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
-          Floor plan
+          {backLabel}
         </button>
         <div className="h-6 w-px bg-line" />
         <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-accent/25 bg-accent/10">

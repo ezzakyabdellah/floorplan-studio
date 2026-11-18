@@ -245,6 +245,7 @@ export async function openSceneFile(): Promise<SceneFile | null> {
         reject(error);
       }
     };
+    input.addEventListener("cancel", () => resolve(null), { once: true });
     input.click();
   });
 }

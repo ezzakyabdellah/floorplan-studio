@@ -8,6 +8,7 @@ import {
   Download,
   Frame,
   Grid3X3,
+  House,
   ImagePlus,
   Info,
   Loader2,
@@ -690,10 +691,12 @@ function ViewSwitcher() {
 
 function TopBar({
   notify,
+  onHome,
   onOpenBlueprint,
   onOpenStairs,
 }: {
   notify: Notify;
+  onHome: () => void;
   onOpenBlueprint: () => void;
   onOpenStairs: () => void;
 }) {
@@ -777,7 +780,13 @@ function TopBar({
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-panel/80 px-4">
-      <div className="flex items-center gap-2.5">
+      <button
+        type="button"
+        onClick={onHome}
+        aria-label="Return to project home"
+        title="Project home"
+        className="flex items-center gap-2.5 rounded-lg text-left transition hover:opacity-80"
+      >
         <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-accent/25 bg-gradient-to-br from-accent/25 to-cyan-500/5 shadow-[0_0_18px_rgba(56,189,248,0.12)]">
           <Frame className="h-4 w-4 text-accent" />
         </div>
@@ -789,7 +798,8 @@ function TopBar({
             {sceneName}
           </p>
         </div>
-      </div>
+        <House className="ml-1 h-3.5 w-3.5 text-slate-600" />
+      </button>
 
       <div className="mx-1 hidden h-6 w-px bg-line sm:block" />
 
@@ -875,8 +885,10 @@ function Toast({ toast }: { toast: ToastState }) {
 
 export function AppShell({
   onOpenStairs,
+  onHome,
 }: {
   onOpenStairs: () => void;
+  onHome: () => void;
 }) {
   const activeView = useFloorPlanStore((state) => state.activeView);
   const setActiveTool = useFloorPlanStore((state) => state.setActiveTool);
@@ -986,6 +998,7 @@ export function AppShell({
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-shell text-slate-200">
       <TopBar
         notify={notify}
+        onHome={onHome}
         onOpenBlueprint={openImporter}
         onOpenStairs={onOpenStairs}
       />
