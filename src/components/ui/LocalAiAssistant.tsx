@@ -45,6 +45,36 @@ type AssistantMode = "ask" | "generate";
 const createMessageId = () =>
   `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+function playTimeoutAlert() {
+  if (typeof window === "undefined" || typeof window.AudioContext === "undefined") {
+    return;
+  }
+
+  try {
+    const audio = new window.AudioContext();
+    void audio
+      .resume()
+      .then(() => {
+        const oscillator = audio.createOscillator();
+        const volume = audio.createGain();
+        const start = audio.currentTime;
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(880, start);
+        volume.gain.setValueAtTime(0.0001, start);
+        volume.gain.exponentialRampToValueAtTime(0.12, start + 0.02);
+        volume.gain.exponentialRampToValueAtTime(0.0001, start + 0.24);
+        oscillator.connect(volume);
+        volume.connect(audio.destination);
+        oscillator.onended = () => void audio.close().catch(() => {});
+        oscillator.start(start);
+        oscillator.stop(start + 0.25);
+      })
+      .catch(() => void audio.close().catch(() => {}));
+  } catch {
+    // Audio is a best-effort alert; timeout handling must still work silently.
+  }
+}
+
 function offlineAuditText(
   walls: Parameters<typeof runComplianceChecks>[0],
   openings: Parameters<typeof runComplianceChecks>[1],
@@ -322,6 +352,7 @@ export function LocalAiAssistant() {
             ),
           ),
         onTimeout: (respond) => {
+          playTimeoutAlert();
           setAiOpen(true);
           timeoutDecisionRef.current = respond;
           setTimeoutDeadline(Date.now() + AI_TIMEOUT_RESPONSE_WINDOW_MS);

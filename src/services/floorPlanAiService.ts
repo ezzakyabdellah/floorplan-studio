@@ -1,4 +1,5 @@
 import type { Opening, OpeningType, Wall } from "../types/floorplan";
+import { distanceToSegment } from "../utils/geometry";
 import { generateLocalJson, type StreamOptions } from "./localAiService";
 
 export type GeneratedFloorPlan = {
@@ -7,78 +8,80 @@ export type GeneratedFloorPlan = {
   openings: Opening[];
 };
 
-type RawRoom = {
-  name?: unknown;
-  x?: unknown;
-  y?: unknown;
-  width?: unknown;
-  depth?: unknown;
-  openTo?: unknown;
+type WallDimensions = {
+  width: number;
+  depth: number;
+};
+
+type RawWall = {
+  x1?: unknown;
+  y1?: unknown;
+  x2?: unknown;
+  y2?: unknown;
+  thickness?: unknown;
+  height?: unknown;
 };
 
 type RawOpening = {
-  room?: unknown;
-  side?: unknown;
+  wallIndex?: unknown;
   type?: unknown;
   position?: unknown;
   width?: unknown;
 };
 
-type Room = {
+type ParsedWalls = {
   name: string;
-  x: number;
-  y: number;
-  width: number;
-  depth: number;
-  openTo: string[];
+  dimensions: WallDimensions;
+  walls: Wall[];
 };
 
-type WallLine = {
-  axis: "horizontal" | "vertical";
-  coordinate: number;
-  start: number;
-  end: number;
-};
-
-const FLOOR_PLAN_SCHEMA = {
+const WALLS_SCHEMA = {
   type: "object",
   properties: {
     name: { type: "string" },
-    width: { type: "number" },
-    depth: { type: "number" },
-    rooms: {
+    walls: {
       type: "array",
+      minItems: 4,
+      maxItems: 48,
       items: {
         type: "object",
         properties: {
-          name: { type: "string" },
-          x: { type: "number" },
-          y: { type: "number" },
-          width: { type: "number" },
-          depth: { type: "number" },
-          openTo: { type: "array", items: { type: "string" } },
+          x1: { type: "number" },
+          y1: { type: "number" },
+          x2: { type: "number" },
+          y2: { type: "number" },
+          thickness: { type: "number", minimum: 0.1, maximum: 2 },
+          height: { type: "number", minimum: 4, maximum: 20 },
         },
-        required: ["name", "x", "y", "width", "depth", "openTo"],
-        additionalProperties: false,
-      },
-    },
-    openings: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          room: { type: "string" },
-          side: { type: "string", enum: ["north", "east", "south", "west"] },
-          type: { type: "string", enum: ["door", "window"] },
-          position: { type: "number" },
-          width: { type: "number" },
-        },
-        required: ["room", "side", "type", "position", "width"],
+        required: ["x1", "y1", "x2", "y2", "thickness", "height"],
         additionalProperties: false,
       },
     },
   },
-  required: ["name", "width", "depth", "rooms", "openings"],
+  required: ["name", "walls"],
+  additionalProperties: false,
+} as const;
+
+const OPENINGS_SCHEMA = {
+  type: "object",
+  properties: {
+    openings: {
+      type: "array",
+      maxItems: 24,
+      items: {
+        type: "object",
+        properties: {
+          wallIndex: { type: "integer", minimum: 0, maximum: 47 },
+          type: { type: "string", enum: ["door", "window"] },
+          position: { type: "number", minimum: 0.05, maximum: 0.95 },
+          width: { type: "number", minimum: 0.5, maximum: 12 },
+        },
+        required: ["wallIndex", "type", "position", "width"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["openings"],
   additionalProperties: false,
 } as const;
 
@@ -90,27 +93,187 @@ function finiteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function parseJson(text: string, description: string): unknown {
+  try {
+    return JSON.parse(text.trim());
+  } catch {
+    throw new Error(`The AI returned invalid JSON for ${description}.`);
+  }
+}
+
+function explicitDimensions(request: string): WallDimensions | null {
+  const matches = Array.from(
+    request.matchAll(
+      /(\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')?\s*(?:x|×|by)\s*(\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')?/gi,
+    ),
+    ([, width, depth]) => ({
+      width: Number(width),
+      depth: Number(depth),
+    }),
+  );
+  return (
+    matches.sort((a, b) => b.width * b.depth - a.width * a.depth)[0] ?? null
+  );
+}
+
 function snap(value: number) {
   return Math.round(value * 2) / 2;
 }
 
-function parseResponse(text: string): unknown {
-  try {
-    return JSON.parse(text.trim());
-  } catch {
-    throw new Error("The local model returned invalid JSON for the floor plan.");
+function roundDimension(value: number) {
+  return Number(value.toFixed(2));
+}
+
+function canonicalWall(
+  id: string,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  thickness: number,
+  height: number,
+): Wall {
+  if (Math.abs(y1 - y2) < 0.1 && x1 > x2) {
+    [x1, x2] = [x2, x1];
+  } else if (Math.abs(x1 - x2) < 0.1 && y1 > y2) {
+    [y1, y2] = [y2, y1];
   }
+  return { id, x1, y1, x2, y2, thickness, height };
 }
 
-function explicitDimensions(request: string) {
-  const match = request.match(
-    /(\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')?\s*(?:x|×|by)\s*(\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')?/i,
+function mergeCollinearWalls(walls: Wall[]) {
+  const groups = new Map<string, Wall[]>();
+  for (const wall of walls) {
+    const horizontal = Math.abs(wall.y1 - wall.y2) < 0.1;
+    const coordinate = horizontal ? wall.y1 : wall.x1;
+    const key = `${horizontal ? "h" : "v"}:${coordinate.toFixed(2)}`;
+    const group = groups.get(key) ?? [];
+    group.push(wall);
+    groups.set(key, group);
+  }
+
+  const result: Wall[] = [];
+  for (const group of groups.values()) {
+    const horizontal = Math.abs(group[0].y1 - group[0].y2) < 0.1;
+    const coordinate = horizontal ? group[0].y1 : group[0].x1;
+    const intervals = group
+      .map((wall) => ({
+        start: horizontal ? wall.x1 : wall.y1,
+        end: horizontal ? wall.x2 : wall.y2,
+        thickness: wall.thickness,
+        height: wall.height,
+      }))
+      .sort((a, b) => a.start - b.start);
+    const merged: typeof intervals = [];
+    for (const interval of intervals) {
+      const previous = merged[merged.length - 1];
+      if (previous && interval.start <= previous.end + 0.05) {
+        previous.end = Math.max(previous.end, interval.end);
+        previous.thickness = Math.max(previous.thickness, interval.thickness);
+        previous.height = Math.max(previous.height, interval.height);
+      } else {
+        merged.push({ ...interval });
+      }
+    }
+    for (const interval of merged) {
+      result.push(
+        canonicalWall(
+          `ai-wall-${result.length + 1}`,
+          horizontal ? interval.start : coordinate,
+          horizontal ? coordinate : interval.start,
+          horizontal ? interval.end : coordinate,
+          horizontal ? coordinate : interval.end,
+          interval.thickness,
+          interval.height,
+        ),
+      );
+    }
+  }
+  return result;
+}
+
+function wallsTouch(a: Wall, b: Wall) {
+  const endpointsA = [
+    { x: a.x1, y: a.y1 },
+    { x: a.x2, y: a.y2 },
+  ];
+  const endpointsB = [
+    { x: b.x1, y: b.y1 },
+    { x: b.x2, y: b.y2 },
+  ];
+  if (
+    endpointsA.some((point) => distanceToSegment(point, b) <= 0.25) ||
+    endpointsB.some((point) => distanceToSegment(point, a) <= 0.25)
+  ) {
+    return true;
+  }
+
+  const aHorizontal = Math.abs(a.y1 - a.y2) < 0.1;
+  const bHorizontal = Math.abs(b.y1 - b.y2) < 0.1;
+  if (aHorizontal === bHorizontal) return false;
+  const horizontal = aHorizontal ? a : b;
+  const vertical = aHorizontal ? b : a;
+  return (
+    vertical.x1 >= Math.min(horizontal.x1, horizontal.x2) - 0.25 &&
+    vertical.x1 <= Math.max(horizontal.x1, horizontal.x2) + 0.25 &&
+    horizontal.y1 >= Math.min(vertical.y1, vertical.y2) - 0.25 &&
+    horizontal.y1 <= Math.max(vertical.y1, vertical.y2) + 0.25
   );
-  return match ? { width: Number(match[1]), depth: Number(match[2]) } : null;
 }
 
-function explicitRoomCount(request: string, kind: "bedroom" | "bathroom") {
-  const words: Record<string, number> = {
+function wallConnectivityIssue(walls: Wall[]) {
+  if (walls.length < 4 || walls.length > 48) {
+    return `expected 4–48 unique wall segments, got ${walls.length}`;
+  }
+  const connected = new Set([0]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const index of [...connected]) {
+      walls.forEach((wall, candidateIndex) => {
+        if (!connected.has(candidateIndex) && wallsTouch(walls[index], wall)) {
+          connected.add(candidateIndex);
+          changed = true;
+        }
+      });
+    }
+  }
+  if (connected.size !== walls.length) {
+    return "some wall segments are disconnected";
+  }
+  return null;
+}
+
+function hasContinuousBoundary(
+  walls: Wall[],
+  axis: "horizontal" | "vertical",
+  coordinate: number,
+  extent: number,
+) {
+  const intervals = walls
+    .filter((wall) =>
+      axis === "horizontal"
+        ? Math.abs(wall.y1 - wall.y2) < 0.1 &&
+          Math.abs(wall.y1 - coordinate) < 0.1
+        : Math.abs(wall.x1 - wall.x2) < 0.1 &&
+          Math.abs(wall.x1 - coordinate) < 0.1,
+    )
+    .map((wall) => ({
+      start: axis === "horizontal" ? wall.x1 : wall.y1,
+      end: axis === "horizontal" ? wall.x2 : wall.y2,
+    }))
+    .sort((a, b) => a.start - b.start);
+  let coveredTo = 0;
+  for (const interval of intervals) {
+    if (interval.start > coveredTo + 0.25) return false;
+    coveredTo = Math.max(coveredTo, interval.end);
+    if (coveredTo >= extent - 0.25) return true;
+  }
+  return false;
+}
+
+function requestedBedroomCount(request: string) {
+  const values: Record<string, number> = {
     one: 1,
     two: 2,
     three: 3,
@@ -118,500 +281,383 @@ function explicitRoomCount(request: string, kind: "bedroom" | "bathroom") {
     five: 5,
     six: 6,
   };
-  const pattern =
-    kind === "bedroom"
-      ? /\b(\d+|one|two|three|four|five|six)\s*[- ]?\s*bedrooms?\b/i
-      : /\b(\d+|one|two|three|four|five|six)\s*[- ]?\s*bathrooms?\b/i;
-  const match = request.match(pattern);
+  const match = request.match(
+    /\b(\d+|one|two|three|four|five|six)\s*[- ]?\s*bedrooms?\b/i,
+  );
   if (!match) return null;
   return Number.isFinite(Number(match[1]))
     ? Number(match[1])
-    : words[match[1].toLowerCase()] ?? null;
+    : values[match[1].toLowerCase()] ?? null;
 }
 
-function sideLine(room: Room, side: string): WallLine {
-  switch (side) {
-    case "north":
-      return {
-        axis: "horizontal",
-        coordinate: room.y + room.depth,
-        start: room.x,
-        end: room.x + room.width,
-      };
-    case "south":
-      return {
-        axis: "horizontal",
-        coordinate: room.y,
-        start: room.x,
-        end: room.x + room.width,
-      };
-    case "east":
-      return {
-        axis: "vertical",
-        coordinate: room.x + room.width,
-        start: room.y,
-        end: room.y + room.depth,
-      };
-    default:
-      return {
-        axis: "vertical",
-        coordinate: room.x,
-        start: room.y,
-        end: room.y + room.depth,
-      };
+function parseWalls(text: string, request: string): ParsedWalls {
+  const value = parseJson(text, "the wall layout");
+  if (!isRecord(value) || !Array.isArray(value.walls)) {
+    throw new Error("The AI wall iteration must return a walls array.");
   }
-}
-
-function rectEdges(room: Room): WallLine[] {
-  return (["north", "east", "south", "west"] as const).map((side) =>
-    sideLine(room, side),
-  );
-}
-
-function roomOpenTo(room: Room, otherName: string) {
-  return room.openTo.some(
-    (name) => name.toLocaleLowerCase() === otherName.toLocaleLowerCase(),
-  );
-}
-
-function validateRooms(rooms: Room[], width: number, depth: number) {
-  if (rooms.length === 0 || rooms.length > 16) {
-    throw new Error("The plan must contain between 1 and 16 rooms.");
+  const issues: string[] = [];
+  if (value.walls.length > 48) {
+    issues.push(`the response contains ${value.walls.length} walls (maximum 48)`);
   }
-  const names = new Set<string>();
-  for (const room of rooms) {
-    if (!room.name) throw new Error("Every room needs a name.");
-    const key = room.name.toLocaleLowerCase();
-    if (names.has(key)) throw new Error(`Duplicate room name: ${room.name}.`);
-    names.add(key);
-    if (
-      room.x < 0 ||
-      room.y < 0 ||
-      room.width < 4 ||
-      room.depth < 4 ||
-      room.x + room.width > width + 0.1 ||
-      room.y + room.depth > depth + 0.1
-    ) {
-      throw new Error(`${room.name} does not fit inside the overall floor plan.`);
+  const rawWalls: Wall[] = [];
+  const wallKeys = new Set<string>();
+  value.walls.forEach((item, index) => {
+    if (!isRecord(item)) {
+      issues.push(`wall ${index + 1} is not an object`);
+      return;
     }
-    if (
-      room.openTo.some(
-        (name) =>
-          name.toLocaleLowerCase() === key ||
-          !rooms.some(
-            (candidate) =>
-              candidate.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
-          ),
-      )
-    ) {
-      throw new Error(`${room.name} has an invalid open-plan connection.`);
+    const raw = item as RawWall;
+    const { x1, y1, x2, y2, thickness, height } = raw;
+    if (![x1, y1, x2, y2, thickness, height].every(finiteNumber)) {
+      issues.push(`wall ${index + 1} has missing or non-finite values`);
+      return;
     }
-  }
-
-  for (let left = 0; left < rooms.length; left += 1) {
-    for (let right = left + 1; right < rooms.length; right += 1) {
-      const a = rooms[left];
-      const b = rooms[right];
-      const overlapX =
-        Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
-      const overlapY =
-        Math.min(a.y + a.depth, b.y + b.depth) - Math.max(a.y, b.y);
-      if (overlapX > 0.1 && overlapY > 0.1) {
-        throw new Error(`${a.name} and ${b.name} overlap.`);
-      }
+    const x1n = x1 as number;
+    const y1n = y1 as number;
+    const x2n = x2 as number;
+    const y2n = y2 as number;
+    const thicknessN = thickness as number;
+    const heightN = height as number;
+    if (thicknessN < 0.1 || thicknessN > 2 || heightN < 4 || heightN > 20) {
+      issues.push(
+        `wall ${index + 1} has invalid thickness (${thicknessN}) or height (${heightN})`,
+      );
+      return;
     }
-  }
-
-  if (rooms.length > 1) {
-    const connected = new Set([0]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const index of [...connected]) {
-        const room = rooms[index];
-        rooms.forEach((candidate, candidateIndex) => {
-          if (connected.has(candidateIndex)) return;
-          const shareVertical =
-            (Math.abs(room.x + room.width - candidate.x) < 0.1 ||
-              Math.abs(candidate.x + candidate.width - room.x) < 0.1) &&
-            Math.min(room.y + room.depth, candidate.y + candidate.depth) -
-              Math.max(room.y, candidate.y) >
-              0.1;
-          const shareHorizontal =
-            (Math.abs(room.y + room.depth - candidate.y) < 0.1 ||
-              Math.abs(candidate.y + candidate.depth - room.y) < 0.1) &&
-            Math.min(room.x + room.width, candidate.x + candidate.width) -
-              Math.max(room.x, candidate.x) >
-              0.1;
-          if (shareVertical || shareHorizontal) {
-            connected.add(candidateIndex);
-            changed = true;
-          }
-        });
-      }
+    const wall = canonicalWall(
+      `raw-${index + 1}`,
+      snap(x1n),
+      snap(y1n),
+      snap(x2n),
+      snap(y2n),
+      roundDimension(thicknessN),
+      roundDimension(heightN),
+    );
+    const horizontal = Math.abs(wall.y1 - wall.y2) < 0.1;
+    const vertical = Math.abs(wall.x1 - wall.x2) < 0.1;
+    if (!horizontal && !vertical) {
+      issues.push(`wall ${index + 1} is diagonal; walls must be horizontal or vertical`);
+      return;
     }
-    if (connected.size !== rooms.length) {
-      throw new Error("Rooms must share walls to form a connected floor plan.");
+    if (Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) < 1) {
+      issues.push(
+        `wall ${index + 1} is zero-length or shorter than 1 ft`,
+      );
+      return;
     }
-  }
-
-  for (const room of rooms) {
-    for (const targetName of room.openTo) {
-      const target = rooms.find(
-        (candidate) =>
-          candidate.name.toLocaleLowerCase() === targetName.toLocaleLowerCase(),
-      )!;
-      const shareVertical =
-        (Math.abs(room.x + room.width - target.x) < 0.1 ||
-          Math.abs(target.x + target.width - room.x) < 0.1) &&
-        Math.min(room.y + room.depth, target.y + target.depth) -
-          Math.max(room.y, target.y) >
-          0.1;
-      const shareHorizontal =
-        (Math.abs(room.y + room.depth - target.y) < 0.1 ||
-          Math.abs(target.y + target.depth - room.y) < 0.1) &&
-        Math.min(room.x + room.width, target.x + target.width) -
-          Math.max(room.x, target.x) >
-          0.1;
-      if (!shareVertical && !shareHorizontal) {
-        throw new Error(`${room.name} and ${target.name} are not adjacent.`);
-      }
+    const key = `${wall.x1.toFixed(2)},${wall.y1.toFixed(2)}:${wall.x2.toFixed(2)},${wall.y2.toFixed(2)}`;
+    if (wallKeys.has(key)) {
+      issues.push(`wall ${index + 1} duplicates an existing wall in reverse or forward`);
+      return;
     }
-  }
-}
-
-function splitWallLines(lines: WallLine[]): WallLine[] {
-  const groups = new Map<string, WallLine[]>();
-  for (const line of lines) {
-    const key = `${line.axis}:${line.coordinate.toFixed(2)}`;
-    const group = groups.get(key) ?? [];
-    group.push(line);
-    groups.set(key, group);
-  }
-
-  const result: WallLine[] = [];
-  for (const group of groups.values()) {
-    const points = [...new Set(group.flatMap((line) => [line.start, line.end]))]
-      .sort((a, b) => a - b);
-    for (let index = 0; index < points.length - 1; index += 1) {
-      const start = points[index];
-      const end = points[index + 1];
-      const midpoint = (start + end) / 2;
-      if (end - start < 0.1 || !group.some((line) => midpoint >= line.start && midpoint <= line.end)) {
-        continue;
-      }
-      result.push({
-        axis: group[0].axis,
-        coordinate: group[0].coordinate,
-        start,
-        end,
-      });
-    }
-  }
-  return result;
-}
-
-function isOpenConnection(line: WallLine, rooms: Room[]) {
-  const midpoint = (line.start + line.end) / 2;
-  const touching = rooms.flatMap((room) =>
-    rectEdges(room)
-      .filter(
-        (edge) =>
-          edge.axis === line.axis &&
-          Math.abs(edge.coordinate - line.coordinate) < 0.1 &&
-          midpoint > edge.start - 0.1 &&
-          midpoint < edge.end + 0.1,
-      )
-      .map(() => room),
-  );
-  for (let left = 0; left < touching.length; left += 1) {
-    for (let right = left + 1; right < touching.length; right += 1) {
-      if (
-        roomOpenTo(touching[left], touching[right].name) ||
-        roomOpenTo(touching[right], touching[left].name)
-      ) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-function isExteriorWall(
-  line: WallLine,
-  width: number,
-  depth: number,
-  side: string,
-) {
-  if (side === "north") return line.axis === "horizontal" && Math.abs(line.coordinate - depth) < 0.1;
-  if (side === "south") return line.axis === "horizontal" && Math.abs(line.coordinate) < 0.1;
-  if (side === "east") return line.axis === "vertical" && Math.abs(line.coordinate - width) < 0.1;
-  return line.axis === "vertical" && Math.abs(line.coordinate) < 0.1;
-}
-
-/** Validate room-level geometry, then derive unique wall segments locally. */
-export function parseGeneratedFloorPlan(
-  text: string,
-  request = "",
-): GeneratedFloorPlan {
-  const decoded = parseResponse(text);
-  if (
-    !isRecord(decoded) ||
-    !Array.isArray(decoded.rooms) ||
-    !Array.isArray(decoded.openings)
-  ) {
-    throw new Error("The AI response must include room and opening arrays.");
-  }
-  if (decoded.rooms.length === 0 || decoded.rooms.length > 16 || decoded.openings.length > 64) {
-    throw new Error("The AI plan has an unsupported number of rooms or openings.");
-  }
-  const widthValue = decoded.width;
-  const depthValue = decoded.depth;
-  if (
-    !finiteNumber(widthValue) ||
-    !finiteNumber(depthValue) ||
-    widthValue < 8 ||
-    depthValue < 8 ||
-    widthValue > 100 ||
-    depthValue > 100
-  ) {
-    throw new Error("The AI response must include overall width and depth.");
-  }
-  const requested = explicitDimensions(request);
-  const width = snap(requested?.width ?? widthValue);
-  const depth = snap(requested?.depth ?? depthValue);
-  if (width < 8 || depth < 8 || width > 100 || depth > 100) {
-    throw new Error("Use floor-plan dimensions between 8 and 100 feet.");
-  }
-  const scaleX = width / widthValue;
-  const scaleY = depth / depthValue;
-
-  const rooms: Room[] = decoded.rooms.map((rawRoom, index) => {
-    if (!isRecord(rawRoom)) {
-      throw new Error(`Room ${index + 1} is not a valid object.`);
-    }
-    const room = rawRoom as RawRoom;
-    if (
-      typeof room.name !== "string" ||
-      ![room.x, room.y, room.width, room.depth].every(finiteNumber) ||
-      (room.openTo !== undefined &&
-        (!Array.isArray(room.openTo) ||
-          !room.openTo.every((name) => typeof name === "string")))
-    ) {
-      throw new Error(`Room ${index + 1} has incomplete geometry.`);
-    }
-    return {
-      name: room.name.trim().slice(0, 40),
-      x: snap((room.x as number) * scaleX),
-      y: snap((room.y as number) * scaleY),
-      width: snap((room.width as number) * scaleX),
-      depth: snap((room.depth as number) * scaleY),
-      openTo: (room.openTo as string[] | undefined) ?? [],
-    };
+    wallKeys.add(key);
+    rawWalls.push(wall);
   });
-  validateRooms(rooms, width, depth);
-  for (const kind of ["bedroom", "bathroom"] as const) {
-    const requestedCount = explicitRoomCount(request, kind);
-    if (requestedCount === null) continue;
-    const pattern = kind === "bedroom" ? /bedroom/i : /bathroom/i;
-    const actualCount = rooms.filter((room) => pattern.test(room.name)).length;
-    if (actualCount !== requestedCount) {
-      throw new Error(
-        `The AI returned ${actualCount} ${kind}${actualCount === 1 ? "" : "s"} but your prompt asks for ${requestedCount}. Try again with a simpler description.`,
-      );
-    }
+
+  const walls = mergeCollinearWalls(rawWalls);
+  const connectivityIssue = wallConnectivityIssue(walls);
+  if (connectivityIssue) issues.push(connectivityIssue);
+  if (walls.length === 0) {
+    throw new Error(`Invalid wall layout: ${issues.join("; ") || "no usable walls"}.`);
   }
 
-  const name =
-    typeof decoded.name === "string" && decoded.name.trim()
-      ? decoded.name.trim().slice(0, 80)
-      : "AI Generated Floor Plan";
+  const minX = Math.min(...walls.flatMap((wall) => [wall.x1, wall.x2]));
+  const maxX = Math.max(...walls.flatMap((wall) => [wall.x1, wall.x2]));
+  const minY = Math.min(...walls.flatMap((wall) => [wall.y1, wall.y2]));
+  const maxY = Math.max(...walls.flatMap((wall) => [wall.y1, wall.y2]));
+  const footprint = explicitDimensions(request) ?? {
+    width: snap(maxX - minX),
+    depth: snap(maxY - minY),
+  };
+  const width = snap(footprint.width);
+  const depth = snap(footprint.depth);
+  const spanX = maxX - minX;
+  const spanY = maxY - minY;
+  if (
+    width < 8 ||
+    depth < 8 ||
+    width > 100 ||
+    depth > 100
+  ) {
+    issues.push(`the requested ${width}×${depth} ft footprint is outside supported bounds`);
+  }
+  if (Math.abs(spanX - width) > 1 || Math.abs(spanY - depth) > 1) {
+    issues.push(
+      `the walls span ${snap(spanX)}×${snap(spanY)} ft, not the requested ${width}×${depth} ft`,
+    );
+  }
 
-  const lines: WallLine[] = [
-    { axis: "horizontal", coordinate: 0, start: 0, end: width },
-    { axis: "horizontal", coordinate: depth, start: 0, end: width },
-    { axis: "vertical", coordinate: 0, start: 0, end: depth },
-    { axis: "vertical", coordinate: width, start: 0, end: depth },
-    ...rooms.flatMap(rectEdges),
-  ];
-  const wallLines = splitWallLines(lines).filter(
-    (line) => !isOpenConnection(line, rooms),
+  const normalizedWalls = walls.map((wall, index) =>
+    canonicalWall(
+      `ai-wall-${index + 1}`,
+      snap(wall.x1 - minX),
+      snap(wall.y1 - minY),
+      snap(wall.x2 - minX),
+      snap(wall.y2 - minY),
+      wall.thickness,
+      wall.height,
+    ),
   );
-  const walls: Wall[] = wallLines.map((line, index) => ({
-    id: `ai-wall-${index + 1}`,
-    x1: line.axis === "horizontal" ? line.start : line.coordinate,
-    y1: line.axis === "horizontal" ? line.coordinate : line.start,
-    x2: line.axis === "horizontal" ? line.end : line.coordinate,
-    y2: line.axis === "horizontal" ? line.coordinate : line.end,
-    thickness: 0.5,
-    height: 8,
-  }));
-  const openings: Opening[] = [];
-  const openingRanges = new Map<string, Array<{ center: number; width: number }>>();
+  const missingEdges = [
+    !hasContinuousBoundary(normalizedWalls, "horizontal", 0, width) && "south",
+    !hasContinuousBoundary(normalizedWalls, "horizontal", depth, width) && "north",
+    !hasContinuousBoundary(normalizedWalls, "vertical", 0, depth) && "west",
+    !hasContinuousBoundary(normalizedWalls, "vertical", width, depth) && "east",
+  ].filter((edge): edge is string => Boolean(edge));
+  if (missingEdges.length > 0) {
+    issues.push(`the exterior perimeter is open on the ${missingEdges.join(", ")} edge(s)`);
+  }
+  const interiorWallCount = normalizedWalls.filter(
+    (wall) => !exteriorWall(wall, { width, depth }),
+  ).length;
+  const bedrooms = requestedBedroomCount(request);
+  const requiredInteriorWalls =
+    bedrooms === null || bedrooms === 0 ? 0 : Math.max(1, bedrooms - 1);
+  if (interiorWallCount < requiredInteriorWalls) {
+    issues.push(
+      `the request needs ${requiredInteriorWalls} or more interior partition wall(s), but only ${interiorWallCount} were returned`,
+    );
+  }
+  if (issues.length > 0) {
+    throw new Error(`Invalid wall layout: ${issues.join("; ")}.`);
+  }
+  const name =
+    typeof value.name === "string" && value.name.trim()
+      ? value.name.trim().slice(0, 80)
+      : "AI Generated Floor Plan";
+  return { name, dimensions: { width, depth }, walls: normalizedWalls };
+}
 
-  const addOpening = (
-    line: WallLine,
-    type: OpeningType,
-    center: number,
-    openingWidth: number,
-  ) => {
-    const wall = walls.find((candidate) => {
-      const wallLine =
-        Math.abs(candidate.y1 - candidate.y2) < 0.1
-          ? {
-              axis: "horizontal" as const,
-              coordinate: candidate.y1,
-              start: Math.min(candidate.x1, candidate.x2),
-              end: Math.max(candidate.x1, candidate.x2),
-            }
-          : {
-              axis: "vertical" as const,
-              coordinate: candidate.x1,
-              start: Math.min(candidate.y1, candidate.y2),
-              end: Math.max(candidate.y1, candidate.y2),
-            };
-      return (
-        wallLine.axis === line.axis &&
-        Math.abs(wallLine.coordinate - line.coordinate) < 0.1 &&
-        center - openingWidth / 2 >= wallLine.start + 0.05 &&
-        center + openingWidth / 2 <= wallLine.end - 0.05
-      );
-    });
-    if (!wall) throw new Error("An opening does not fit on its selected room wall.");
-    const start = line.axis === "horizontal" ? Math.min(wall.x1, wall.x2) : Math.min(wall.y1, wall.y2);
-    const wallLength = line.axis === "horizontal"
-      ? Math.abs(wall.x2 - wall.x1)
-      : Math.abs(wall.y2 - wall.y1);
-    const positionOnWall = (center - start) / wallLength;
-    const existing = openingRanges.get(wall.id) ?? [];
+function wallLength(wall: Wall) {
+  return Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1);
+}
+
+function exteriorWall(wall: Wall, dimensions: WallDimensions) {
+  return (
+    (Math.abs(wall.y1 - wall.y2) < 0.1 &&
+      (Math.abs(wall.y1) < 0.1 ||
+        Math.abs(wall.y1 - dimensions.depth) < 0.1)) ||
+    (Math.abs(wall.x1 - wall.x2) < 0.1 &&
+      (Math.abs(wall.x1) < 0.1 ||
+        Math.abs(wall.x1 - dimensions.width) < 0.1))
+  );
+}
+
+function parseOpenings(text: string, plan: ParsedWalls): Opening[] {
+  const value = parseJson(text, "the openings");
+  if (!isRecord(value) || !Array.isArray(value.openings)) {
+    throw new Error("The AI openings iteration must return an openings array.");
+  }
+  if (value.openings.length > 24) {
+    throw new Error(
+      `The AI returned ${value.openings.length} openings; the limit is 24.`,
+    );
+  }
+
+  const openings: Opening[] = [];
+  const occupied = new Map<number, Array<{ center: number; width: number }>>();
+  value.openings.forEach((item, index) => {
+    if (!isRecord(item)) throw new Error(`Opening ${index + 1} is not an object.`);
+    const raw = item as RawOpening;
+    const { wallIndex, type, position, width } = raw;
+    if (
+      !finiteNumber(wallIndex) ||
+      !Number.isInteger(wallIndex) ||
+      wallIndex < 0 ||
+      wallIndex >= plan.walls.length ||
+      (type !== "door" && type !== "window") ||
+      !finiteNumber(position) ||
+      !finiteNumber(width) ||
+      position < 0.05 ||
+      position > 0.95 ||
+      width < 0.5 ||
+      width > 12
+    ) {
+      throw new Error(`Opening ${index + 1} has invalid wall, type, or dimensions.`);
+    }
+
+    const wall = plan.walls[wallIndex];
+    const length = wallLength(wall);
+    const center = position * length;
+    if (center - width / 2 < 0.05 || center + width / 2 > length - 0.05) {
+      throw new Error(`Opening ${index + 1} does not fit on wall ${wallIndex}.`);
+    }
+    if (type === "window" && !exteriorWall(wall, plan.dimensions)) {
+      throw new Error(`Window ${index + 1} is not on an exterior wall.`);
+    }
+    const existing = occupied.get(wallIndex) ?? [];
     if (
       existing.some(
-        (opening) =>
-          Math.abs(opening.center - center) <
-          (opening.width + openingWidth) / 2 + 0.25,
+        (other) => Math.abs(other.center - center) < (other.width + width) / 2 + 0.25,
       )
     ) {
-      throw new Error("The AI placed overlapping openings.");
+      throw new Error(`Opening ${index + 1} overlaps another opening.`);
     }
-    openingRanges.set(wall.id, [...existing, { center, width: openingWidth }]);
+    occupied.set(wallIndex, [...existing, { center, width }]);
+    openings.push({
+      id: `ai-opening-${index + 1}`,
+      wallId: wall.id,
+      type: type as OpeningType,
+      positionOnWall: position,
+      width,
+    });
+  });
+  return openings;
+}
+
+function ensureExteriorOpenings(plan: ParsedWalls, openings: Opening[]) {
+  const add = (
+    wallIndex: number,
+    type: OpeningType,
+    width: number,
+    position = 0.5,
+  ) => {
+    const wall = plan.walls[wallIndex];
+    const length = wallLength(wall);
+    const center = position * length;
+    if (
+      length < width + 0.1 ||
+      center - width / 2 < 0.05 ||
+      center + width / 2 > length - 0.05 ||
+      openings.some((opening) => {
+        if (opening.wallId !== wall.id) return false;
+        const other = opening.positionOnWall * length;
+        return Math.abs(other - center) < (opening.width + width) / 2 + 0.25;
+      })
+    ) {
+      return false;
+    }
     openings.push({
       id: `ai-opening-${openings.length + 1}`,
       wallId: wall.id,
       type,
-      positionOnWall,
-      width: openingWidth,
+      positionOnWall: position,
+      width,
     });
+    return true;
   };
 
-  for (const [index, rawOpening] of decoded.openings.entries()) {
-    if (!isRecord(rawOpening)) {
-      throw new Error(`Opening ${index + 1} is not a valid object.`);
-    }
-    const opening = rawOpening as RawOpening;
-    if (
-      typeof opening.room !== "string" ||
-      typeof opening.side !== "string" ||
-      !["north", "east", "south", "west"].includes(opening.side) ||
-      (opening.type !== "door" && opening.type !== "window") ||
-      !finiteNumber(opening.position) ||
-      !finiteNumber(opening.width) ||
-      opening.position < 0.05 ||
-      opening.position > 0.95 ||
-      opening.width < 0.5 ||
-      opening.width > 12
-    ) {
-      throw new Error(`Opening ${index + 1} has invalid type, location, or width.`);
-    }
-    const roomName = opening.room;
-    const room = rooms.find(
-      (candidate) =>
-        candidate.name.toLocaleLowerCase() === roomName.toLocaleLowerCase(),
-    );
-    if (!room) throw new Error(`Opening ${index + 1} references an unknown room.`);
-    const side = opening.side as "north" | "east" | "south" | "west";
-    const line = sideLine(room, side);
-    const onExterior = isExteriorWall(line, width, depth, side);
-    const oppositeSide: Record<string, string> = {
-      north: "south",
-      east: "west",
-      south: "north",
-      west: "east",
-    };
-    const bordersAnotherRoom = rooms.some((candidate) => {
-      if (candidate.name === room.name) return false;
-      const sharedLine = sideLine(candidate, oppositeSide[side]);
-      return (
-        Math.abs(sharedLine.coordinate - line.coordinate) < 0.1 &&
-        Math.min(sharedLine.end, line.end) - Math.max(sharedLine.start, line.start) >
-          0.1
-      );
-    });
-    if (
-      opening.type === "window" &&
-      !onExterior
-    ) {
-      throw new Error("Windows must be placed on exterior room walls.");
-    }
-    if (opening.type === "door" && !onExterior && !bordersAnotherRoom) {
-      throw new Error("Interior doors must connect adjacent rooms.");
-    }
-    const center = line.start + (line.end - line.start) * opening.position;
-    addOpening(line, opening.type, center, opening.width);
-  }
-
-  // Guarantee an entry and natural light if the model omitted them.
-  const hasExteriorDoor = openings.some((opening) => {
-    const wall = walls.find((candidate) => candidate.id === opening.wallId)!;
-    return (
-      opening.type === "door" &&
-      (Math.abs(wall.y1) < 0.1 && Math.abs(wall.y2) < 0.1 ||
-        Math.abs(wall.x1) < 0.1 && Math.abs(wall.x2) < 0.1 ||
-        Math.abs(wall.x1 - width) < 0.1 && Math.abs(wall.x2 - width) < 0.1 ||
-        Math.abs(wall.y1 - depth) < 0.1 && Math.abs(wall.y2 - depth) < 0.1)
-    );
-  });
-  if (!hasExteriorDoor) {
-    const southWalls = walls
-      .filter((wall) => Math.abs(wall.y1) < 0.1 && Math.abs(wall.y2) < 0.1)
-      .sort((a, b) => Math.abs(b.x2 - b.x1) - Math.abs(a.x2 - a.x1));
-    const wall = southWalls[0];
-    if (!wall || Math.abs(wall.x2 - wall.x1) < 3.5) {
-      throw new Error("Could not place an entry door on the exterior boundary.");
-    }
-    addOpening(
-      { axis: "horizontal", coordinate: 0, start: 0, end: width },
-      "door",
-      (Math.min(wall.x1, wall.x2) + Math.max(wall.x1, wall.x2)) / 2,
-      3,
-    );
-  }
-  const hasWindow = openings.some((opening) => opening.type === "window");
-  if (!hasWindow) {
-    const exteriorWalls = walls
-      .filter((wall) => Math.abs(wall.y1 - wall.y2) < 0.1 && Math.abs(wall.y1 - depth) < 0.1)
-      .sort((a, b) => Math.abs(b.x2 - b.x1) - Math.abs(a.x2 - a.x1));
-    const wall = exteriorWalls[0];
-    if (wall && Math.abs(wall.x2 - wall.x1) >= 4.5) {
-      addOpening(
-        { axis: "horizontal", coordinate: depth, start: 0, end: width },
-        "window",
-        (Math.min(wall.x1, wall.x2) + Math.max(wall.x1, wall.x2)) / 2,
-        4,
-      );
+  if (!openings.some((opening) => opening.type === "door" && exteriorWall(
+    plan.walls.find((wall) => wall.id === opening.wallId)!,
+    plan.dimensions,
+  ))) {
+    const entryIndex = plan.walls
+      .map((wall, index) => ({ wall, index }))
+      .filter(({ wall }) => exteriorWall(wall, plan.dimensions) && wallLength(wall) >= 3.5)
+      .sort((a, b) => wallLength(b.wall) - wallLength(a.wall))[0]?.index;
+    if (entryIndex === undefined || !add(entryIndex, "door", 3)) {
+      throw new Error("No exterior wall is long enough for an entry door.");
     }
   }
 
-  return { name, walls, openings };
+  if (!openings.some((opening) => opening.type === "window")) {
+    const candidates = plan.walls
+      .map((wall, index) => ({ wall, index }))
+      .filter(({ wall }) => exteriorWall(wall, plan.dimensions) && wallLength(wall) >= 4.5)
+      .sort((a, b) => {
+        const aUsed = openings.some((opening) => opening.wallId === a.wall.id);
+        const bUsed = openings.some((opening) => opening.wallId === b.wall.id);
+        return Number(aUsed) - Number(bUsed) || wallLength(b.wall) - wallLength(a.wall);
+      });
+    for (const { index } of candidates) {
+      if (
+        add(index, "window", 4, 0.5) ||
+        add(index, "window", 4, 0.25) ||
+        add(index, "window", 4, 0.75)
+      ) {
+        break;
+      }
+    }
+  }
+  return openings;
 }
 
-function buildPrompt(request: string) {
+function parseFinalPlan(text: string, request: string): GeneratedFloorPlan {
+  const value = parseJson(text, "the complete floor plan");
+  if (!isRecord(value) || !Array.isArray(value.walls) || !Array.isArray(value.openings)) {
+    throw new Error("The final AI JSON must contain walls and openings arrays.");
+  }
+  const wallsResponse = JSON.stringify({ name: value.name, walls: value.walls });
+  const parsed = parseWalls(wallsResponse, request);
+  const openingsResponse = JSON.stringify({ openings: value.openings });
+  const openings = ensureExteriorOpenings(
+    parsed,
+    parseOpenings(openingsResponse, parsed),
+  );
+  return { name: parsed.name, walls: parsed.walls, openings };
+}
+
+function buildWallsPrompt(request: string) {
   return [
-    "Design a practical floor plan and return only the requested JSON.",
-    "Use feet, origin (0,0) at the southwest corner, X east and Y north. Define each room as a non-overlapping rectangle inside the overall footprint; coordinate rooms so they share walls and form a sensible connected layout.",
-    "Prioritize the user's exact room count and dimensions. Keep bedrooms private, group kitchen/dining/living as requested, and provide doors between connected rooms. Use openTo for open-plan spaces. Add an exterior entry door and windows on exterior walls. Do not invent extra rooms.",
-    "Room x/y is its southwest corner; width extends east and depth north. Opening position is 0–1 along the named room side. All opening widths are feet. Keep rooms at least 4 ft wide/deep and the overall footprint between 8 and 100 ft.",
-    `User request: ${request.trim()}`,
+    "Iteration 1 of 2: generate the wall layout only. Return one JSON object matching the supplied schema.",
+    "Use feet with origin (0,0) at the southwest; X goes east and Y north. Make a closed exterior perimeter and sensible connected, axis-aligned interior walls for the requested rooms. Use each wall once; do not include doors or windows in this iteration.",
+    "Honor the user's overall dimensions. All wall coordinates must be between 0 and the requested footprint dimensions. Use practical 0.5 ft thickness and 8 ft height unless the user specifies otherwise.",
+    `User request: ${request}`,
   ].join("\n");
+}
+
+function buildOpeningsPrompt(request: string, plan: ParsedWalls) {
+  const wallList = plan.walls.map((wall, index) => {
+    const role = exteriorWall(wall, plan.dimensions) ? "exterior" : "interior";
+    return `W${index}: (${wall.x1},${wall.y1})-(${wall.x2},${wall.y2}), ${wallLength(wall).toFixed(1)} ft, ${role}`;
+  });
+  return [
+    "Iteration 2 of 2: add doors and windows to the already validated walls. Do not change or repeat the walls.",
+    "Return only JSON with an openings array. Each opening uses a zero-based wallIndex from the list, type door/window, position 0.05–0.95 along the wall, and width in feet.",
+    "Add an exterior entry door, interior doors for room access, and windows only on exterior walls. Keep openings at least 0.25 ft from wall ends and do not overlap them. Use at most 24 openings.",
+    `User request: ${request}`,
+    `Validated footprint: ${plan.dimensions.width}×${plan.dimensions.depth} ft.`,
+    "Wall index list:",
+    wallList.join("\n"),
+  ].join("\n");
+}
+
+async function generateValidated<T>(
+  prompt: string,
+  schema: unknown,
+  parse: (text: string) => T,
+  options: StreamOptions,
+  stage: string,
+): Promise<T> {
+  const response = await generateLocalJson(prompt, options, schema);
+  try {
+    return parse(response);
+  } catch (firstError) {
+    if (options.signal?.aborted) throw firstError;
+    const reason =
+      firstError instanceof Error ? firstError.message : "invalid JSON";
+    options.onChunk?.(`\n\n[Correcting the ${stage} iteration…]\n`);
+    const corrected = await generateLocalJson(
+      [
+        prompt,
+        "",
+        `Validation errors to fix: ${reason}`,
+        `Regenerate the ${stage} JSON from scratch. Do not copy the invalid response.`,
+        stage === "wall layout"
+          ? "Return the exact requested footprint, one connected closed exterior perimeter, no duplicate/reversed walls, no zero-length or diagonal walls, and the requested interior partitions."
+          : "Use only the supplied wall indices. Keep openings away from endpoints, avoid overlaps, and place windows only on exterior walls.",
+        "Follow the schema exactly and return one JSON object only.",
+      ].join("\n"),
+      options,
+      schema,
+    );
+    try {
+      return parse(corrected);
+    } catch (retryError) {
+      const retryReason =
+        retryError instanceof Error ? retryError.message : "invalid JSON";
+      throw new Error(
+        `The AI ${stage} is still invalid after one correction attempt. ${retryReason}`,
+      );
+    }
+  }
+}
+
+export function parseGeneratedFloorPlan(
+  text: string,
+  request = "",
+): GeneratedFloorPlan {
+  return parseFinalPlan(text, request);
 }
 
 export async function generateFloorPlanFromPrompt(
@@ -626,16 +672,41 @@ export async function generateFloorPlanFromPrompt(
     throw new Error("Keep the floor-plan description under 1,200 characters.");
   }
 
-  const response = await generateLocalJson(
-    buildPrompt(trimmedRequest),
-    {
-      ...options,
-      numPredict: options.numPredict ?? 3072,
-      numContext: options.numContext ?? 8192,
-      timeoutMs: options.timeoutMs ?? 300_000,
-      operation: options.operation ?? "floorplan-generation",
-    },
-    FLOOR_PLAN_SCHEMA,
+  const baseOptions: StreamOptions = {
+    ...options,
+    numContext: options.numContext ?? 8192,
+    timeoutMs: options.timeoutMs ?? 300_000,
+  };
+  const roomOptions: StreamOptions = {
+    ...baseOptions,
+    numPredict: options.numPredict ?? 1800,
+    operation: "floorplan-generation-walls",
+  };
+  const parsedWalls = await generateValidated(
+    buildWallsPrompt(trimmedRequest),
+    WALLS_SCHEMA,
+    (text) => parseWalls(text, trimmedRequest),
+    roomOptions,
+    "wall layout",
   );
-  return parseGeneratedFloorPlan(response, trimmedRequest);
+
+  options.onChunk?.("\n\n[Walls validated. Iteration 2/2: generating openings…]\n");
+  const openingOptions: StreamOptions = {
+    ...baseOptions,
+    numPredict: options.numPredict ? Math.min(options.numPredict, 768) : 768,
+    operation: "floorplan-generation-openings",
+  };
+  const openingResponse = await generateValidated(
+    buildOpeningsPrompt(trimmedRequest, parsedWalls),
+    OPENINGS_SCHEMA,
+    (text) => parseOpenings(text, parsedWalls),
+    openingOptions,
+    "openings",
+  );
+  const openings = ensureExteriorOpenings(parsedWalls, openingResponse);
+  return {
+    name: parsedWalls.name,
+    walls: parsedWalls.walls,
+    openings,
+  };
 }
