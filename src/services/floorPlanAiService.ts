@@ -177,6 +177,15 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: string[]) {
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
+function unexpectedKeys(value: Record<string, unknown>, allowed: string[]) {
+  return Object.keys(value).filter((key) => !allowed.includes(key));
+}
+
+function knownRoomIds(ids: Iterable<string>) {
+  const list = [...ids];
+  return list.length > 0 ? list.join(", ") : "(none)";
+}
+
 function fail(stage: string, message: string): never {
   const error = new Error(`Invalid ${stage}: ${message}.`);
   console.error(`[Floor plan ${stage}]`, error);
@@ -278,16 +287,32 @@ function validateLinks(value: unknown, program: RoomProgram): SemanticLink[] {
   if (value.links.length > 128) return fail(stage, "links cannot exceed 128 entries");
   const ids = new Set(program.rooms.map((room) => room.id));
   const pairs = new Set<string>();
-  const links = value.links.map((entry, index): SemanticLink => {
-    if (
-      !isRecord(entry) ||
-      !hasOnlyKeys(entry, ["from", "to", "connection"]) ||
-      typeof entry.from !== "string" ||
-      typeof entry.to !== "string" ||
-      !ids.has(entry.from) ||
-      !ids.has(entry.to)
-    ) {
-      return fail(stage, `link ${index + 1} references an unknown room id or has extra fields`);
+  const links: SemanticLink[] = [];
+  value.links.forEach((entry, index) => {
+    if (!isRecord(entry)) {
+      return fail(stage, `link ${index + 1} must be an object`);
+    }
+    const extraKeys = unexpectedKeys(entry, ["from", "to", "connection"]);
+    if (extraKeys.length > 0) {
+      return fail(
+        stage,
+        `link ${index + 1} has unexpected field(s): ${extraKeys.join(", ")}. Allowed fields: from, to, connection`,
+      );
+    }
+    if (typeof entry.from !== "string" || typeof entry.to !== "string") {
+      return fail(
+        stage,
+        `link ${index + 1} must have string "from" and "to" room ids`,
+      );
+    }
+    const unknownIds = [...new Set([entry.from, entry.to])].filter(
+      (id) => !ids.has(id),
+    );
+    if (unknownIds.length > 0) {
+      return fail(
+        stage,
+        `link ${index + 1} (${entry.from} -> ${entry.to}) references unknown room id(s): ${unknownIds.join(", ")}. Known room ids: ${knownRoomIds(ids)}`,
+      );
     }
     if (entry.from === entry.to) {
       return fail(stage, `link ${index + 1} connects a room to itself`);
@@ -297,16 +322,24 @@ function validateLinks(value: unknown, program: RoomProgram): SemanticLink[] {
       entry.connection !== "open" &&
       entry.connection !== "arch"
     ) {
-      return fail(stage, `link ${index + 1} has an unsupported connection`);
+      return fail(
+        stage,
+        `link ${index + 1} has unsupported connection ${JSON.stringify(entry.connection)}; expected door, open, or arch`,
+      );
     }
     const key = [entry.from, entry.to].sort().join("\u0000");
-    if (pairs.has(key)) return fail(stage, `link ${index + 1} duplicates a room connection`);
+    if (pairs.has(key)) {
+      console.warn(
+        `[Floor plan ${stage}] Dropped duplicate link ${index + 1} between "${entry.from}" and "${entry.to}".`,
+      );
+      return;
+    }
     pairs.add(key);
-    return {
+    links.push({
       from: entry.from,
       to: entry.to,
       connection: entry.connection,
-    };
+    });
   });
 
   // Reuse the shared semantic validator for the connectivity invariant.
@@ -330,13 +363,27 @@ function validateWindowAssignments(value: unknown, program: RoomProgram) {
   const validIds = new Set(program.rooms.map((room) => room.id));
   const assignments = new Map<string, number>();
   value.windows.forEach((entry, index) => {
-    if (
-      !isRecord(entry) ||
-      !hasOnlyKeys(entry, ["room_id", "count"]) ||
-      typeof entry.room_id !== "string" ||
-      !validIds.has(entry.room_id)
-    ) {
-      return fail(stage, `window entry ${index + 1} references an unknown room or has extra fields`);
+    if (!isRecord(entry)) {
+      return fail(stage, `window entry ${index + 1} must be an object`);
+    }
+    const extraKeys = unexpectedKeys(entry, ["room_id", "count"]);
+    if (extraKeys.length > 0) {
+      return fail(
+        stage,
+        `window entry ${index + 1} has unexpected field(s): ${extraKeys.join(", ")}. Allowed fields: room_id, count`,
+      );
+    }
+    if (typeof entry.room_id !== "string") {
+      return fail(
+        stage,
+        `window entry ${index + 1} must have a string "room_id"`,
+      );
+    }
+    if (!validIds.has(entry.room_id)) {
+      return fail(
+        stage,
+        `window entry ${index + 1} references unknown room id "${entry.room_id}". Known room ids: ${knownRoomIds(validIds)}`,
+      );
     }
     if (
       typeof entry.count !== "number" ||
@@ -344,7 +391,10 @@ function validateWindowAssignments(value: unknown, program: RoomProgram) {
       entry.count < 0 ||
       entry.count > 12
     ) {
-      return fail(stage, `window entry ${index + 1} count must be an integer from 0 to 12`);
+      return fail(
+        stage,
+        `window entry ${index + 1} count must be an integer from 0 to 12 (received ${JSON.stringify(entry.count)})`,
+      );
     }
     if (assignments.has(entry.room_id)) {
       return fail(stage, `room "${entry.room_id}" has duplicate window assignments`);
@@ -378,6 +428,47 @@ function roomIsEntryLike(room: Record<string, unknown>) {
       `${room.id} ${typeof room.type === "string" ? room.type : ""}`,
     )
   );
+}
+
+const FUNCTION_ZONE_RULES: Array<[RegExp, RoomZone]> = [
+  [
+    /bath|toilet|wc|shower|laundry|utility|storage|store|closet|wardrobe|kitchen|pantry/i,
+    "service",
+  ],
+  [/hall|corridor|landing|stairs|passage/i, "core"],
+  [
+    /living|lounge|dining|foyer|entry|entrance|vestibule|great.?room|family/i,
+    "front",
+  ],
+  [/bed|sleep|study|office|nursery|guest/i, "private"],
+];
+
+function inferRoomZone(room: ProgramRoom): RoomZone | null {
+  const label = `${room.id} ${room.type}`;
+  return FUNCTION_ZONE_RULES.find(([pattern]) => pattern.test(label))?.[1] ?? null;
+}
+
+/**
+ * Small local models occasionally copy a single zone onto every room (for
+ * example all rooms end up "private"). That collapses the layout into one long
+ * row, so recover the zoning from the room names/types when it is safe.
+ */
+function normalizeCollapsedZones(program: RoomProgram): RoomProgram {
+  if (program.rooms.length < 2) return program;
+  if (new Set(program.rooms.map((room) => room.zone)).size > 1) return program;
+
+  let changed = false;
+  const rooms = program.rooms.map((room) => {
+    const inferred = inferRoomZone(room);
+    if (!inferred || inferred === room.zone) return room;
+    changed = true;
+    return { ...room, zone: inferred };
+  });
+  if (!changed) return program;
+  console.warn(
+    `[Floor plan] The AI assigned every room to zone "${program.rooms[0].zone}"; reassigned zones from room names.`,
+  );
+  return { ...program, rooms };
 }
 
 function parseMergedPlanWithEntranceFallback(
@@ -439,13 +530,24 @@ function validateRepairPatch(value: unknown, plan: SemanticFloorPlan): RepairPat
   const roomIds = new Set(plan.rooms.map((room) => room.id));
   const updatedRooms = new Set<string>();
   const roomUpdates = value.room_updates.map((entry, index): RoomUpdate => {
-    if (
-      !isRecord(entry) ||
-      !hasOnlyKeys(entry, ["id", "zone", "area_m2"]) ||
-      typeof entry.id !== "string" ||
-      !roomIds.has(entry.id)
-    ) {
-      return fail(stage, `room update ${index + 1} references an unknown room or has extra fields`);
+    if (!isRecord(entry)) {
+      return fail(stage, `room update ${index + 1} must be an object`);
+    }
+    const extraKeys = unexpectedKeys(entry, ["id", "zone", "area_m2"]);
+    if (extraKeys.length > 0) {
+      return fail(
+        stage,
+        `room update ${index + 1} has unexpected field(s): ${extraKeys.join(", ")}. Allowed fields: id, zone, area_m2`,
+      );
+    }
+    if (typeof entry.id !== "string") {
+      return fail(stage, `room update ${index + 1} must have a string "id"`);
+    }
+    if (!roomIds.has(entry.id)) {
+      return fail(
+        stage,
+        `room update ${index + 1} references unknown room id "${entry.id}". Known room ids: ${knownRoomIds(roomIds)}`,
+      );
     }
     if (updatedRooms.has(entry.id)) {
       return fail(stage, `room "${entry.id}" is updated more than once`);
@@ -474,17 +576,37 @@ function validateRepairPatch(value: unknown, plan: SemanticFloorPlan): RepairPat
   });
 
   const parsePatchLink = (entry: unknown, index: number, withConnection: boolean) => {
-    const allowed = withConnection ? ["from", "to", "connection"] : ["from", "to"];
-    if (
-      !isRecord(entry) ||
-      !hasOnlyKeys(entry, allowed) ||
-      typeof entry.from !== "string" ||
-      typeof entry.to !== "string" ||
-      !roomIds.has(entry.from) ||
-      !roomIds.has(entry.to) ||
-      entry.from === entry.to
-    ) {
-      return fail(stage, `link patch ${index + 1} has invalid room references`);
+    const allowed = withConnection
+      ? ["from", "to", "connection"]
+      : ["from", "to"];
+    const label = withConnection ? "link update" : "link removal";
+    if (!isRecord(entry)) {
+      return fail(stage, `${label} ${index + 1} must be an object`);
+    }
+    const extraKeys = unexpectedKeys(entry, allowed);
+    if (extraKeys.length > 0) {
+      return fail(
+        stage,
+        `${label} ${index + 1} has unexpected field(s): ${extraKeys.join(", ")}. Allowed fields: ${allowed.join(", ")}`,
+      );
+    }
+    if (typeof entry.from !== "string" || typeof entry.to !== "string") {
+      return fail(
+        stage,
+        `${label} ${index + 1} must have string "from" and "to" room ids`,
+      );
+    }
+    const unknownIds = [...new Set([entry.from, entry.to])].filter(
+      (id) => !roomIds.has(id),
+    );
+    if (unknownIds.length > 0) {
+      return fail(
+        stage,
+        `${label} ${index + 1} (${entry.from} -> ${entry.to}) references unknown room id(s): ${unknownIds.join(", ")}. Known room ids: ${knownRoomIds(roomIds)}`,
+      );
+    }
+    if (entry.from === entry.to) {
+      return fail(stage, `${label} ${index + 1} connects a room to itself`);
     }
     if (
       withConnection &&
@@ -492,7 +614,10 @@ function validateRepairPatch(value: unknown, plan: SemanticFloorPlan): RepairPat
       entry.connection !== "open" &&
       entry.connection !== "arch"
     ) {
-      return fail(stage, `link patch ${index + 1} has an unsupported connection`);
+      return fail(
+        stage,
+        `${label} ${index + 1} has unsupported connection ${JSON.stringify(entry.connection)}; expected door, open, or arch`,
+      );
     }
     return withConnection
       ? ({
@@ -544,6 +669,30 @@ function applyRepairPatch(plan: SemanticFloorPlan, patch: RepairPatch) {
   });
 }
 
+function patchChangesPlan(plan: SemanticFloorPlan, patch: RepairPatch) {
+  const roomsById = new Map(plan.rooms.map((room) => [room.id, room]));
+  const pairKey = (from: string, to: string) => [from, to].sort().join("\u0000");
+  const existingLinks = new Map(
+    plan.links.map((link) => [pairKey(link.from, link.to), link]),
+  );
+  const roomChanged = patch.room_updates.some((update) => {
+    const room = roomsById.get(update.id);
+    if (!room) return false;
+    return (
+      (update.zone !== null && update.zone !== room.zone) ||
+      (update.area_m2 !== null && update.area_m2 !== room.area_m2)
+    );
+  });
+  const linkRemoved = patch.link_removals.some((removal) =>
+    existingLinks.has(pairKey(removal.from, removal.to)),
+  );
+  const linkChanged = patch.link_updates.some((update) => {
+    const existing = existingLinks.get(pairKey(update.from, update.to));
+    return !existing || existing.connection !== update.connection;
+  });
+  return roomChanged || linkRemoved || linkChanged;
+}
+
 function diagnosticRoomContext(
   plan: SemanticFloorPlan,
   diagnostics: LayoutDiagnostic[],
@@ -591,6 +740,7 @@ function solveWithoutRepair(plan: SemanticFloorPlan, warnings: string[] = []) {
 async function solveWithBoundedRepair(
   initialPlan: SemanticFloorPlan,
   options: StreamOptions,
+  warnings: string[] = [],
 ): Promise<GeneratedFloorPlan> {
   let plan = initialPlan;
   let solved = solveFloorPlanLayout(plan);
@@ -605,8 +755,20 @@ async function solveWithBoundedRepair(
       "Only address the listed geometry issues. Do not repeat the full room program.",
       "Use room_updates to change only zone and/or area_m2 (use null for unchanged fields).",
       "Use link_updates to add or change a connection; link_removals only when a link itself prevents a valid adjacency.",
-      "Keep the room-link graph connected. Use only IDs in the supplied context. If no safe change applies, return empty arrays.",
+      "Keep the room-link graph connected. Use only IDs in the supplied context.",
+      "Do not return a patch with values identical to the current plan; if no safe change applies, return empty arrays.",
+      "When two linked rooms land in separate zone bands, move the smaller service room into the linked room's zone or connect it to a room in its own band.",
       `Affected room and link context: ${JSON.stringify(diagnosticRoomContext(plan, diagnostics))}`,
+      `Current solved room rectangles in meters: ${JSON.stringify(
+        solved.rooms.map(({ id, zone, x_m, y_m, width_m, height_m }) => ({
+          id,
+          zone,
+          x_m,
+          y_m,
+          width_m,
+          height_m,
+        })),
+      )}`,
       `Specific geometry issues: ${JSON.stringify(diagnostics)}`,
     ].join("\n");
     try {
@@ -618,6 +780,12 @@ async function solveWithBoundedRepair(
         `layout-repair-${retry}`,
         600,
       );
+      if (!patchChangesPlan(plan, patchValue)) {
+        repairWarnings.push(
+          `Layout repair ${retry} returned no changes, so the current layout was kept.`,
+        );
+        break;
+      }
       plan = applyRepairPatch(plan, patchValue);
       solved = solveFloorPlanLayout(plan);
       diagnostics = critiqueFloorPlanLayout(plan, solved);
@@ -635,6 +803,7 @@ async function solveWithBoundedRepair(
 
   logDiagnostics(diagnostics);
   return makeGeneratedPlan(solved, [
+    ...warnings,
     ...diagnostics.map((diagnostic) => diagnostic.message),
     ...repairWarnings,
   ]);
@@ -645,7 +814,10 @@ function buildRoomProgramPrompt(request: string) {
     "Pass 1/3 — define the room program only. Return one JSON object matching the supplied schema.",
     "Do not output links, windows, coordinates, walls, or extra properties.",
     "Use square meters. Use grid_unit_m 0.5 unless the user specifies another metric grid.",
-    "Use unique short room IDs, positive practical target areas, and only front/core/private/service zones.",
+    "Use unique short room IDs and positive practical target areas.",
+    'Set "type" to the room function (living_room, kitchen, bedroom, bathroom, storage, hallway, dining_room).',
+    "Set zone by function: front = entrance/living/foyer, core = hallway/circulation, private = bedroom/study, service = kitchen/bathroom/laundry/storage.",
+    "Do not place unrelated rooms in the same zone; only true single-purpose plans should have one zone.",
     "entrance_room must exactly match an id in rooms. Prefer a front-zone living room, foyer, or entry.",
     `User request: ${request}`,
   ].join("\n");
@@ -655,6 +827,9 @@ function buildLinksPrompt(request: string, program: RoomProgram) {
   return [
     "Pass 2/3 — add only room-to-room circulation links for the locked room list below.",
     "Return one JSON object with a links array only. Include every room in one connected graph, avoid self-links and duplicate pairs, and use door/open/arch connections.",
+    "Route circulation through halls, corridors, foyers, or the living room where possible.",
+    "Never make a bedroom the only path to another bedroom or bathroom; bedrooms should normally connect to a hall or the entrance room.",
+    "Keep kitchens adjacent to living/dining and bathrooms adjacent to a hall or bedroom.",
     `User request: ${request}`,
     `Locked rooms: ${JSON.stringify(program.rooms.map(({ id, type, zone }) => ({ id, type, zone })))}`,
     `Entrance room: ${program.entrance_room}`,
@@ -769,13 +944,15 @@ async function generatePlan(
   request: string,
   options: StreamOptions,
 ): Promise<GeneratedFloorPlan> {
-  const roomProgram = await generateStructuredPass(
-    buildRoomProgramPrompt(request),
-    ROOM_PROGRAM_SCHEMA,
-    validateRoomProgram,
-    options,
-    "pass-1-room-program",
-    900,
+  const roomProgram = normalizeCollapsedZones(
+    await generateStructuredPass(
+      buildRoomProgramPrompt(request),
+      ROOM_PROGRAM_SCHEMA,
+      validateRoomProgram,
+      options,
+      "pass-1-room-program",
+      900,
+    ),
   );
   options.onChunk?.("\n[Room program validated.]\n");
 

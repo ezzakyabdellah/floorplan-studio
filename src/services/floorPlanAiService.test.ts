@@ -136,6 +136,42 @@ describe("iterative semantic AI floor-plan generation", () => {
     );
   });
 
+  it("names the exact unknown room id in circulation errors", async () => {
+    const badLinks = {
+      links: [{ from: "living", to: "garden", connection: "door" }],
+    };
+    const requests = stubPasses([roomProgram, ...Array(5).fill(badLinks)]);
+
+    await expect(generateFloorPlanFromPrompt("A connected home")).rejects.toThrow(
+      "link 1 (living -> garden) references unknown room id(s): garden",
+    );
+    expect(JSON.parse(requests[2].body as string).prompt).toContain(
+      "unknown room id(s): garden",
+    );
+  });
+
+  it("drops duplicate circulation links instead of retrying", async () => {
+    const duplicateLinks = {
+      links: [
+        ...linksResponse.links,
+        { from: "bed_1", to: "living", connection: "door" },
+      ],
+    };
+    const requests = stubPasses([
+      roomProgram,
+      duplicateLinks,
+      windowsResponse,
+    ]);
+
+    const plan = await generateFloorPlanFromPrompt("A connected home");
+
+    expect(requests).toHaveLength(3);
+    expect(plan.openings.filter((opening) => opening.type === "door")).toHaveLength(
+      linksResponse.links.length + 1,
+    );
+    expect(plan.warnings).toEqual([]);
+  });
+
   it("validates unique window assignments and non-negative integer counts", async () => {
     const badWindows = {
       windows: [
@@ -215,6 +251,33 @@ describe("iterative semantic AI floor-plan generation", () => {
       entrance_room: "tiny",
       rooms: [{ id: "tiny", type: "living_room", area_m2: 0.1, zone: "front" }],
     };
+    const driftingPatch = (area_m2: number) => ({
+      room_updates: [{ id: "tiny", zone: null, area_m2 }],
+      link_updates: [],
+      link_removals: [],
+    });
+    const requests = stubPasses([
+      tinyProgram,
+      { links: [] },
+      { windows: [{ room_id: "tiny", count: 0 }] },
+      driftingPatch(0.2),
+      driftingPatch(0.3),
+    ]);
+
+    const plan = await generateFloorPlanFromPrompt("A tiny room");
+
+    expect(requests).toHaveLength(5);
+    expect(plan.warnings.some((warning) => warning.includes("differs from target area"))).toBe(
+      true,
+    );
+  });
+
+  it("stops repairing when the model returns an unchanged patch", async () => {
+    const tinyProgram = {
+      grid_unit_m: 0.5,
+      entrance_room: "tiny",
+      rooms: [{ id: "tiny", type: "living_room", area_m2: 0.1, zone: "front" }],
+    };
     const noOpPatch = {
       room_updates: [],
       link_updates: [],
@@ -225,15 +288,14 @@ describe("iterative semantic AI floor-plan generation", () => {
       { links: [] },
       { windows: [{ room_id: "tiny", count: 0 }] },
       noOpPatch,
-      noOpPatch,
     ]);
 
     const plan = await generateFloorPlanFromPrompt("A tiny room");
 
-    expect(requests).toHaveLength(5);
-    expect(plan.warnings.some((warning) => warning.includes("differs from target area"))).toBe(
-      true,
-    );
+    expect(requests).toHaveLength(4);
+    expect(
+      plan.warnings.some((warning) => warning.includes("returned no changes")),
+    ).toBe(true);
   });
 
   it("rejects invalid room references and disconnected graphs in merged JSON", () => {

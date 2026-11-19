@@ -196,4 +196,42 @@ describe("deterministic floor-plan layout solver", () => {
       true,
     );
   });
+
+  it("keeps target areas and places every linked door for a three-bedroom plan", () => {
+    const plan = validateSemanticFloorPlan({
+      grid_unit_m: 0.5,
+      entrance_room: "living_room",
+      rooms: [
+        { id: "living_room", type: "living_room", area_m2: 30, zone: "front", windows: 4 },
+        { id: "kitchen", type: "kitchen", area_m2: 15, zone: "service", windows: 2 },
+        { id: "bedroom1", type: "bedroom", area_m2: 20, zone: "private", windows: 1 },
+        { id: "bedroom2", type: "bedroom", area_m2: 20, zone: "private", windows: 1 },
+        { id: "bedroom3", type: "bedroom", area_m2: 20, zone: "private", windows: 1 },
+        { id: "bathroom1", type: "bathroom", area_m2: 5, zone: "service", windows: 0 },
+        { id: "bathroom2", type: "bathroom", area_m2: 5, zone: "service", windows: 0 },
+        { id: "storage", type: "storage", area_m2: 10, zone: "service", windows: 0 },
+      ],
+      links: [
+        { from: "living_room", to: "kitchen", connection: "door" },
+        { from: "kitchen", to: "bedroom1", connection: "door" },
+        { from: "bedroom1", to: "bathroom1", connection: "door" },
+        { from: "bedroom1", to: "bedroom2", connection: "door" },
+        { from: "bedroom2", to: "bathroom2", connection: "door" },
+        { from: "bedroom2", to: "bedroom3", connection: "door" },
+        { from: "bedroom3", to: "storage", connection: "door" },
+      ],
+    });
+    const solved = solveFloorPlanLayout(plan);
+    const solvedArea = solved.rooms.reduce(
+      (total, room) => total + room.width_m * room.height_m,
+      0,
+    );
+    const targetArea = plan.rooms.reduce((total, room) => total + room.area_m2, 0);
+
+    expect(Math.abs(solvedArea - targetArea) / targetArea).toBeLessThan(0.2);
+    expect(solved.openings.filter((opening) => opening.type === "door")).toHaveLength(
+      plan.links.length + 1,
+    );
+    expect(solved.warnings).toEqual([]);
+  });
 });

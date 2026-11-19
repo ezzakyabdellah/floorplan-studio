@@ -95,6 +95,10 @@ function meterToFeet(value: number) {
   return Number((value * METERS_TO_FEET).toFixed(6));
 }
 
+const ROOM_ASPECT_MIN = 0.5;
+const ROOM_ASPECT_MAX = 2;
+const AREA_ERROR_WEIGHT = 6;
+
 function roomHeightOptions(room: SemanticRoom, grid: number) {
   const minSteps = Math.max(1, Math.ceil(MIN_ROOM_DIMENSION_M / grid));
   const maxSteps = Math.max(
@@ -103,23 +107,28 @@ function roomHeightOptions(room: SemanticRoom, grid: number) {
   );
   const candidates = new Map<number, number>();
   for (let heightSteps = minSteps; heightSteps <= maxSteps; heightSteps += 1) {
-    const height = heightSteps * grid;
-    const areaWidth = room.area_m2 / height;
+    const rawWidthSteps = room.area_m2 / (heightSteps * grid * grid);
+    if (rawWidthSteps > heightSteps * ROOM_ASPECT_MAX + 1e-9) continue;
     const widthSteps = Math.max(
       minSteps,
-      heightSteps,
-      Math.ceil(areaWidth / grid - 1e-8),
+      Math.ceil(heightSteps * ROOM_ASPECT_MIN - 1e-9),
+      Math.ceil(rawWidthSteps - 1e-8),
     );
-    if (widthSteps <= heightSteps * 2) {
+    if (widthSteps <= heightSteps * ROOM_ASPECT_MAX + 1e-9) {
       candidates.set(heightSteps, widthSteps);
     }
   }
   if (candidates.size === 0) {
     const heightSteps = Math.max(
       minSteps,
-      Math.ceil(Math.sqrt(Math.max(room.area_m2, 1) / 2) / grid),
+      Math.ceil(Math.sqrt(Math.max(room.area_m2, 1) / ROOM_ASPECT_MAX) / grid),
     );
-    candidates.set(heightSteps, Math.max(heightSteps, Math.ceil(heightSteps * 1.5)));
+    const widthSteps = Math.max(
+      minSteps,
+      Math.ceil(room.area_m2 / (heightSteps * grid * grid) - 1e-8),
+      Math.ceil(heightSteps * ROOM_ASPECT_MIN - 1e-9),
+    );
+    candidates.set(heightSteps, widthSteps);
   }
   return candidates;
 }
@@ -127,70 +136,104 @@ function roomHeightOptions(room: SemanticRoom, grid: number) {
 function chooseHeightStep(
   roomSizes: RoomSize[],
   possibleHeights: Set<number>,
+  grid: number,
 ) {
   return [...possibleHeights].sort((a, b) => {
     const score = (heightSteps: number) =>
       roomSizes.reduce((total, item) => {
         const widthSteps = item.candidateHeights.get(heightSteps) ?? heightSteps;
-        return total + Math.abs(Math.log(widthSteps / heightSteps));
+        const solvedArea = widthSteps * heightSteps * grid * grid;
+        const areaError =
+          Math.abs(solvedArea - item.room.area_m2) / item.room.area_m2;
+        return (
+          total +
+          Math.abs(Math.log(widthSteps / heightSteps)) +
+          areaError * AREA_ERROR_WEIGHT
+        );
       }, 0);
     return score(a) - score(b) || a - b;
   })[0];
 }
 
-function arrangeRowRooms(
-  rooms: SemanticRoom[],
-  links: SemanticLink[],
-  anchorRoom: string,
-) {
-  const remaining = [...rooms];
-  const ordered: SemanticRoom[] = [];
-  const entranceIndex = remaining.findIndex((room) => room.id === anchorRoom);
-  if (entranceIndex >= 0) ordered.push(...remaining.splice(entranceIndex, 1));
-  if (ordered.length === 0 && remaining.length > 0) {
-    const highestDegree = remaining
-      .map((room, index) => ({
-        index,
-        degree: links.filter(
-          (link) => link.from === room.id || link.to === room.id,
-        ).length,
-      }))
-      .sort((a, b) => b.degree - a.degree || a.index - b.index)[0];
-    ordered.push(...remaining.splice(highestDegree.index, 1));
+/**
+ * Depth-first walk over the circulation graph. Rooms that are connected end up
+ * next to each other in the ordering, so packing rows in this order keeps most
+ * linked rooms on adjacent row/column positions.
+ */
+function buildTraversalOrder(plan: SemanticFloorPlan) {
+  const adjacency = new Map<string, string[]>(
+    plan.rooms.map((room) => [room.id, []]),
+  );
+  for (const link of plan.links) {
+    adjacency.get(link.from)?.push(link.to);
+    adjacency.get(link.to)?.push(link.from);
   }
-  while (remaining.length > 0) {
-    const last = ordered[ordered.length - 1];
-    const nextIndex = remaining.findIndex((room) =>
-      links.some(
-        (link) =>
-          (link.from === last.id && link.to === room.id) ||
-          (link.to === last.id && link.from === room.id),
-      ),
-    );
-    ordered.push(...remaining.splice(nextIndex >= 0 ? nextIndex : 0, 1));
-  }
-  return ordered;
+  const order = new Map<string, number>();
+  const visit = (roomId: string) => {
+    if (order.has(roomId)) return;
+    order.set(roomId, order.size);
+    for (const next of adjacency.get(roomId) ?? []) visit(next);
+  };
+  visit(plan.entrance_room);
+  for (const room of plan.rooms) visit(room.id);
+  return order;
 }
 
 function buildRows(plan: SemanticFloorPlan) {
   const zoneOrder: RoomZone[] = ["front", "core", "service", "private"];
   const entrance = plan.rooms.find((room) => room.id === plan.entrance_room)!;
-  const orderedZones = [
-    entrance.zone,
-    ...zoneOrder.filter((zone) => zone !== entrance.zone),
-  ];
+  const linksBetweenZones = new Map<string, number>();
+  const zoneOf = new Map(plan.rooms.map((room) => [room.id, room.zone]));
+  for (const link of plan.links) {
+    const fromZone = zoneOf.get(link.from)!;
+    const toZone = zoneOf.get(link.to)!;
+    if (fromZone === toZone) continue;
+    const key = [fromZone, toZone].sort().join("\u0000");
+    linksBetweenZones.set(key, (linksBetweenZones.get(key) ?? 0) + 1);
+  }
+  const zoneLinkCount = (a: RoomZone, b: RoomZone) =>
+    linksBetweenZones.get([a, b].sort().join("\u0000")) ?? 0;
+  const orderedZones: RoomZone[] = [entrance.zone];
+  const presentZones = new Set(plan.rooms.map((room) => room.zone));
+  const remainingZones = new Set(
+    zoneOrder.filter(
+      (zone) => zone !== entrance.zone && presentZones.has(zone),
+    ),
+  );
+  while (remainingZones.size > 0) {
+    const previousZone = orderedZones[orderedZones.length - 1];
+    const nextZone = [...remainingZones].sort((a, b) => {
+      // Prefer the zone most tightly linked to the band just placed, then
+      // to any band already placed, then the canonical zone order.
+      const score = (zone: RoomZone) =>
+        zoneLinkCount(previousZone, zone) * 100 +
+        orderedZones.reduce(
+          (total, placed) => total + zoneLinkCount(placed, zone) * 10,
+          0,
+        );
+      return (
+        score(b) - score(a) ||
+        zoneOrder.indexOf(a) - zoneOrder.indexOf(b)
+      );
+    })[0];
+    orderedZones.push(nextZone);
+    remainingZones.delete(nextZone);
+  }
+  const traversalOrder = buildTraversalOrder(plan);
+  const orderOf = (room: SemanticRoom) =>
+    traversalOrder.get(room.id) ?? Number.MAX_SAFE_INTEGER;
   const rows: LayoutRow[] = [];
 
   for (const zone of orderedZones) {
     const remaining = plan.rooms
       .filter((room) => room.zone === zone)
-      .sort((a, b) => b.area_m2 - a.area_m2 || compareStrings(a.id, b.id));
-    const zoneRooms = arrangeRowRooms(
-      remaining,
-      plan.links,
-      plan.entrance_room,
-    );
-    let pending = [...zoneRooms];
+      .sort(
+        (a, b) =>
+          orderOf(a) - orderOf(b) ||
+          b.area_m2 - a.area_m2 ||
+          compareStrings(a.id, b.id),
+      );
+    const pending = [...remaining];
 
     while (pending.length > 0) {
       const first = pending.shift()!;
@@ -216,73 +259,151 @@ function buildRows(plan: SemanticFloorPlan) {
         pending.splice(index, 1);
       }
 
-      const heightSteps = chooseHeightStep(rowSizes, possibleHeights);
-      const orderedRooms = arrangeRowRooms(
-        rowSizes.map((item) => item.room),
-        plan.links,
-        plan.entrance_room,
+      const heightSteps = chooseHeightStep(
+        rowSizes,
+        possibleHeights,
+        plan.grid_unit_m,
+      );
+      const orderedRooms = [...rowSizes].sort(
+        (a, b) => orderOf(a.room) - orderOf(b.room),
       );
       rows.push({
         zone,
         heightSteps,
-        rooms: orderedRooms.map((room) => {
-          const item = rowSizes.find((candidate) => candidate.room.id === room.id)!;
-          return {
-            room,
-            widthSteps: item.candidateHeights.get(heightSteps)!,
-          };
-        }),
+        rooms: orderedRooms.map((item) => ({
+          room: item.room,
+          widthSteps: item.candidateHeights.get(heightSteps)!,
+        })),
       });
     }
   }
-  let previousRoomId: string | null = null;
-  return rows.map((row) => {
-    const linkedAnchor =
-      previousRoomId === null
-        ? plan.entrance_room
-        : row.rooms.find((item) =>
-            plan.links.some(
-              (link) =>
-                (link.from === previousRoomId && link.to === item.room.id) ||
-                (link.to === previousRoomId && link.from === item.room.id),
-            ),
-          )?.room.id ?? plan.entrance_room;
-    const orderedRooms = arrangeRowRooms(
-      row.rooms.map((item) => item.room),
-      plan.links,
-      linkedAnchor,
-    );
-    previousRoomId = orderedRooms[0]?.id ?? null;
-    return {
-      ...row,
-      rooms: orderedRooms.map((room) => row.rooms.find((item) => item.room.id === room.id)!),
-    };
-  });
+  return rows;
 }
+
+function rowWidthSteps(row: LayoutRow) {
+  return row.rooms.reduce((total, item) => total + item.widthSteps, 0);
+}
+
+function alignmentScoreWithPreviousRow(
+  row: LayoutRow,
+  offsetSteps: number,
+  previousRow: PlacedRow,
+  links: SemanticLink[],
+  grid: number,
+) {
+  const minimumDoorSteps = Math.ceil(
+    (MIN_OPENING_WIDTH_M + OPENING_END_CLEARANCE_M * 2) / grid - 1e-9,
+  );
+  const previousRooms = new Map(
+    previousRow.rooms.map((item) => [item.room.id, item]),
+  );
+  let score = 0;
+  let xSteps = offsetSteps;
+  for (const item of row.rooms) {
+    const endSteps = xSteps + item.widthSteps;
+    for (const link of links) {
+      const otherId =
+        link.from === item.room.id
+          ? link.to
+          : link.to === item.room.id
+            ? link.from
+            : null;
+      if (!otherId) continue;
+      const other = previousRooms.get(otherId);
+      if (!other) continue;
+      const overlap = Math.max(
+        0,
+        Math.min(endSteps, other.xSteps + other.widthSteps) -
+          Math.max(xSteps, other.xSteps),
+      );
+      if (overlap <= 0) continue;
+      // Prefer satisfying every cross-band link over one very wide overlap:
+      // each link that can fit a door earns a bonus, then overlap is capped.
+      score += Math.min(overlap, minimumDoorSteps * 2);
+      if (overlap >= minimumDoorSteps) score += 1000;
+    }
+    xSteps = endSteps;
+  }
+  return score;
+}
+
+type PlacedRowRoom = {
+  room: SemanticRoom;
+  xSteps: number;
+  widthSteps: number;
+};
+
+type PlacedRow = {
+  ySteps: number;
+  heightSteps: number;
+  rooms: PlacedRowRoom[];
+};
 
 function buildRoomRectangles(plan: SemanticFloorPlan): SolvedRoom[] {
   const rows = buildRows(plan);
-  let y = 0;
+  const grid = plan.grid_unit_m;
+  const widestRowSteps = rows.reduce(
+    (widest, row) => Math.max(widest, rowWidthSteps(row)),
+    0,
+  );
+  const placedRows: PlacedRow[] = [];
   const rooms: SolvedRoom[] = [];
+  let ySteps = 0;
+
   for (const row of rows) {
-    let x = 0;
-    const height = row.heightSteps * plan.grid_unit_m;
+    let offsetSteps = 0;
+    if (placedRows.length > 0) {
+      const previousRow = placedRows[placedRows.length - 1];
+      // Try every alignment so linked rooms in the previous band overlap.
+      // The overlap term dominates; the offset term keeps the plan compact
+      // when several alignments score equally.
+      let bestScore = Number.NEGATIVE_INFINITY;
+      for (let candidate = 0; candidate <= widestRowSteps; candidate += 1) {
+        const alignment = alignmentScoreWithPreviousRow(
+          row,
+          candidate,
+          previousRow,
+          plan.links,
+          grid,
+        );
+        const score = alignment * 1000 - candidate;
+        if (score > bestScore) {
+          bestScore = score;
+          offsetSteps = candidate;
+        }
+      }
+    }
+
+    const height = row.heightSteps * grid;
+    const placedRooms: PlacedRowRoom[] = [];
+    let xSteps = offsetSteps;
     for (const item of row.rooms) {
-      const width = item.widthSteps * plan.grid_unit_m;
+      const width = item.widthSteps * grid;
       rooms.push({
         id: item.room.id,
         type: item.room.type,
         zone: item.room.zone,
         area_m2: item.room.area_m2,
-        x_m: roundGridSteps(x),
-        y_m: roundGridSteps(y),
+        x_m: roundGridSteps(xSteps * grid),
+        y_m: roundGridSteps(ySteps * grid),
         width_m: roundGridSteps(width),
         height_m: roundGridSteps(height),
       });
-      x += width;
+      placedRooms.push({
+        room: item.room,
+        xSteps,
+        widthSteps: item.widthSteps,
+      });
+      xSteps += item.widthSteps;
     }
-    y += height;
+    placedRows.push({
+      ySteps,
+      heightSteps: row.heightSteps,
+      rooms: placedRooms,
+    });
+    ySteps += row.heightSteps;
   }
+
   return rooms;
 }
 
@@ -446,9 +567,14 @@ function openingOverlaps(
   return openings.some((opening) => {
     if (opening.wallId !== segment.wall.id) return false;
     const otherCenter = opening.positionOnWall * lengthFeet;
+    // The round-trip through positionOnWall introduces floating-point noise;
+    // subtract a tiny epsilon so openings placed at the exact minimum spacing
+    // are still accepted.
     return (
       Math.abs(otherCenter - centerFeet) <
-      (opening.width + widthFeet) / 2 + OPENING_SPACING_M * METERS_TO_FEET
+      (opening.width + widthFeet) / 2 +
+        OPENING_SPACING_M * METERS_TO_FEET -
+        1e-6
     );
   });
 }
@@ -730,22 +856,31 @@ export function validateSemanticFloorPlan(value: unknown): SemanticFloorPlan {
     return fail("links must be an array with at most 128 entries");
   }
   const linkKeys = new Set<string>();
-  const links = raw.links.map((entry, index): SemanticLink => {
+  const links: SemanticLink[] = [];
+  raw.links.forEach((entry, index) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       return fail(`link ${index + 1} must be an object`);
     }
     const link = entry as Record<string, unknown>;
     const linkKeysAllowed = ["from", "to", "connection"];
-    if (Object.keys(link).some((key) => !linkKeysAllowed.includes(key))) {
-      return fail(`link ${index + 1} has unexpected properties`);
+    const extraKeys = Object.keys(link).filter(
+      (key) => !linkKeysAllowed.includes(key),
+    );
+    if (extraKeys.length > 0) {
+      return fail(
+        `link ${index + 1} has unexpected field(s): ${extraKeys.join(", ")}. Allowed fields: from, to, connection`,
+      );
     }
-    if (
-      typeof link.from !== "string" ||
-      typeof link.to !== "string" ||
-      !ids.has(link.from) ||
-      !ids.has(link.to)
-    ) {
-      return fail(`link ${index + 1} references an unknown room id`);
+    if (typeof link.from !== "string" || typeof link.to !== "string") {
+      return fail(`link ${index + 1} must have string "from" and "to" room ids`);
+    }
+    const unknownIds = [...new Set([link.from, link.to])].filter(
+      (id) => !ids.has(id),
+    );
+    if (unknownIds.length > 0) {
+      return fail(
+        `link ${index + 1} (${link.from} -> ${link.to}) references an unknown room id: ${unknownIds.join(", ")}. Known room ids: ${[...ids].join(", ")}`,
+      );
     }
     if (link.from === link.to) return fail(`link ${index + 1} connects a room to itself`);
     if (
@@ -753,16 +888,23 @@ export function validateSemanticFloorPlan(value: unknown): SemanticFloorPlan {
       link.connection !== "open" &&
       link.connection !== "arch"
     ) {
-      return fail(`link ${index + 1} has an unsupported connection`);
+      return fail(
+        `link ${index + 1} has unsupported connection ${JSON.stringify(link.connection)}; expected door, open, or arch`,
+      );
     }
     const key = [link.from, link.to].sort().join("\u0000");
-    if (linkKeys.has(key)) return fail(`link ${index + 1} duplicates a room connection`);
+    if (linkKeys.has(key)) {
+      console.warn(
+        `[Floor plan validation] Dropped duplicate link ${index + 1} between "${link.from}" and "${link.to}".`,
+      );
+      return;
+    }
     linkKeys.add(key);
-    return {
+    links.push({
       from: link.from,
       to: link.to,
       connection: link.connection,
-    };
+    });
   });
 
   const connected = new Set<string>([rooms[0].id]);

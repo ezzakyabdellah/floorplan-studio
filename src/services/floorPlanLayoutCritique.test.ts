@@ -62,9 +62,15 @@ describe("floor-plan geometry critique", () => {
       rooms: [
         { id: "entry", type: "living_room", area_m2: 25, zone: "front", windows: 0 },
         { id: "hall", type: "hallway", area_m2: 25, zone: "core", windows: 0 },
+        { id: "utility", type: "utility", area_m2: 25, zone: "service", windows: 0 },
         { id: "bedroom", type: "bedroom", area_m2: 25, zone: "private", windows: 0 },
       ],
-      links: [{ from: "entry", to: "bedroom", connection: "door" }],
+      links: [
+        { from: "entry", to: "hall", connection: "door" },
+        { from: "hall", to: "utility", connection: "door" },
+        { from: "utility", to: "bedroom", connection: "door" },
+        { from: "entry", to: "bedroom", connection: "door" },
+      ],
     };
     const solved = solveFloorPlanLayout(semantic);
 
