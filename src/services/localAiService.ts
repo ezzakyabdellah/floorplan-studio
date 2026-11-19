@@ -7,7 +7,7 @@ import { logAiError, logAiOutput } from "./aiLog";
 export const OLLAMA_BASE_URL = "http://localhost:11434";
 export const OLLAMA_GENERATE_URL = `${OLLAMA_BASE_URL}/api/generate`;
 export const DEFAULT_AI_MODELS = ["llama3.2", "qwen2.5", "mistral"];
-export const AI_TIMEOUT_RESPONSE_WINDOW_MS = 20_000;
+export const AI_TIMEOUT_RESPONSE_WINDOW_MS = 10_000;
 
 export type OllamaStatus = {
   online: boolean;
@@ -27,6 +27,13 @@ export type StreamOptions = {
   onTimeout?: (respond: (continueWaiting: boolean) => void) => void;
   /** Called when no timeout decision was made within the response window. */
   onTimeoutExpired?: () => void;
+  /** Ask whether to continue after a structured-generation retry batch fails. */
+  onRetryLimit?: (details: {
+    stage: string;
+    attempts: number;
+    batch: number;
+    error: string;
+  }) => Promise<boolean>;
   /** Log label only; this value is never sent to the local model. */
   operation?: string;
 };

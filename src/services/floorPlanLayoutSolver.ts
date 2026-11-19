@@ -765,6 +765,29 @@ export function validateSemanticFloorPlan(value: unknown): SemanticFloorPlan {
     };
   });
 
+  const connected = new Set<string>([rooms[0].id]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const link of links) {
+      if (connected.has(link.from) && !connected.has(link.to)) {
+        connected.add(link.to);
+        changed = true;
+      } else if (connected.has(link.to) && !connected.has(link.from)) {
+        connected.add(link.from);
+        changed = true;
+      }
+    }
+  }
+  if (connected.size !== rooms.length) {
+    const disconnected = rooms
+      .filter((room) => !connected.has(room.id))
+      .map((room) => room.id);
+    return fail(
+      `room-link graph is disconnected; unreachable rooms: ${disconnected.join(", ")}`,
+    );
+  }
+
   return {
     grid_unit_m: raw.grid_unit_m,
     entrance_room: raw.entrance_room,

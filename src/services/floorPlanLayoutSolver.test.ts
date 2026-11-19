@@ -63,6 +63,8 @@ describe("deterministic floor-plan layout solver", () => {
       ],
       links: [
         { from: "living", to: "hall", connection: "open" },
+        { from: "hall", to: "kitchen", connection: "door" },
+        { from: "kitchen", to: "bed_1", connection: "door" },
         { from: "bed_1", to: "bath", connection: "door" },
       ],
     });
@@ -177,7 +179,12 @@ describe("deterministic floor-plan layout solver", () => {
         { id: "right", type: "bedroom", area_m2: 25, zone: "core", windows: 0 },
         { id: "bottom", type: "bedroom", area_m2: 100, zone: "private", windows: 0 },
       ],
-      links: [],
+      links: [
+        { from: "top", to: "bath", connection: "door" },
+        { from: "bath", to: "left", connection: "door" },
+        { from: "bath", to: "right", connection: "door" },
+        { from: "bath", to: "bottom", connection: "door" },
+      ],
     });
     const solved = solveFloorPlanLayout(plan);
 

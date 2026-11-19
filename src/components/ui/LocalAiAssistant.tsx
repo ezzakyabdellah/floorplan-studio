@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Cpu,
   Check,
+  Copy,
   Download,
   Eraser,
   Loader2,
@@ -27,6 +28,7 @@ import { cn } from "../../utils/cn";
 import { exportAiLog, getAiLogLocation } from "../../services/aiLog";
 import {
   generateFloorPlanFromPrompt,
+  parsePastedFloorPlan,
   type GeneratedFloorPlan,
 } from "../../services/floorPlanAiService";
 
@@ -109,10 +111,18 @@ export function LocalAiAssistant() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [mode, setMode] = useState<AssistantMode>("ask");
   const [draft, setDraft] = useState("");
+  const [manualJson, setManualJson] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorCopied, setErrorCopied] = useState(false);
   const [timeoutDeadline, setTimeoutDeadline] = useState<number | null>(null);
   const [timeoutSecondsLeft, setTimeoutSecondsLeft] = useState(0);
+  const [retryPrompt, setRetryPrompt] = useState<{
+    stage: string;
+    attempts: number;
+    batch: number;
+    error: string;
+  } | null>(null);
   const [aiLogLocation, setAiLogLocation] = useState("ai-log.jsonl");
   const [exportingLog, setExportingLog] = useState(false);
 
@@ -123,11 +133,16 @@ export function LocalAiAssistant() {
   const timeoutExpiredRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
+  useEffect(() => {
+    setErrorCopied(false);
+  }, [error]);
+
   const resolveTimeoutPrompt = (continueWaiting: boolean) => {
     const respond = timeoutDecisionRef.current;
     timeoutDecisionRef.current = null;
     setTimeoutDeadline(null);
     setTimeoutSecondsLeft(0);
+    setRetryPrompt(null);
     if (!continueWaiting) abortRef.current?.abort();
     respond?.(continueWaiting);
   };
@@ -167,6 +182,13 @@ export function LocalAiAssistant() {
 
   useEffect(() => {
     if (timeoutDeadline === null) return;
+    const timeout = globalThis.setTimeout(
+      () => {
+        timeoutExpiredRef.current = true;
+        resolveTimeoutPrompt(false);
+      },
+      Math.max(0, timeoutDeadline - Date.now()),
+    );
     const updateCountdown = () => {
       setTimeoutSecondsLeft(
         Math.max(0, Math.ceil((timeoutDeadline - Date.now()) / 1000)),
@@ -174,7 +196,10 @@ export function LocalAiAssistant() {
     };
     updateCountdown();
     const interval = globalThis.setInterval(updateCountdown, 250);
-    return () => globalThis.clearInterval(interval);
+    return () => {
+      globalThis.clearTimeout(timeout);
+      globalThis.clearInterval(interval);
+    };
   }, [timeoutDeadline]);
 
   useEffect(() => {
@@ -354,9 +379,23 @@ export function LocalAiAssistant() {
         onTimeout: (respond) => {
           playTimeoutAlert();
           setAiOpen(true);
+          setRetryPrompt(null);
           timeoutDecisionRef.current = respond;
           setTimeoutDeadline(Date.now() + AI_TIMEOUT_RESPONSE_WINDOW_MS);
         },
+        onRetryLimit: ({ stage, attempts, batch, error: retryError }) =>
+          new Promise<boolean>((resolve) => {
+            playTimeoutAlert();
+            setAiOpen(true);
+            setRetryPrompt({
+              stage,
+              attempts,
+              batch,
+              error: retryError,
+            });
+            timeoutDecisionRef.current = resolve;
+            setTimeoutDeadline(Date.now() + AI_TIMEOUT_RESPONSE_WINDOW_MS);
+          }),
         onTimeoutExpired: () => {
           timeoutExpiredRef.current = true;
           resolveTimeoutPrompt(false);
@@ -404,6 +443,37 @@ export function LocalAiAssistant() {
     }
   };
 
+  const handlePasteJson = () => {
+    const response = manualJson.trim();
+    if (!response || streaming) return;
+    setError(null);
+    try {
+      const plan = parsePastedFloorPlan(response);
+      const messageId = createMessageId();
+      setMessages((current) => [
+        ...current,
+        {
+          id: createMessageId(),
+          role: "user",
+          content: "Import pasted AI floor-plan JSON.",
+        },
+        {
+          id: messageId,
+          role: "assistant",
+          content: `JSON parsed: ${plan.name}. Review the layout, then apply it to replace the current plan.`,
+          plan,
+        },
+      ]);
+      setManualJson("");
+    } catch (pasteError) {
+      const detail =
+        pasteError instanceof Error
+          ? pasteError.message
+          : "Could not parse the pasted floor-plan JSON.";
+      setError(detail);
+    }
+  };
+
   const handleApplyPlan = (messageId: string, plan: GeneratedFloorPlan) => {
     importPlan(plan.walls, plan.openings, { replace: true, name: plan.name });
     setActiveView("2d");
@@ -417,7 +487,30 @@ export function LocalAiAssistant() {
   const handleClear = () => {
     if (streaming) return;
     setMessages([]);
+    setManualJson("");
     setError(null);
+  };
+
+  const handleCopyError = async () => {
+    if (!error) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(error);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = error;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        textarea.remove();
+        if (!copied) throw new Error("Clipboard copy is unavailable.");
+      }
+      setErrorCopied(true);
+    } catch (copyError) {
+      console.error("[Floor plan assistant] Could not copy error text.", copyError);
+    }
   };
 
   const handleExportLog = async () => {
@@ -611,9 +704,22 @@ export function LocalAiAssistant() {
           </div>
         ) : null}
 
-        {error && status?.online ? (
-          <div className="rounded-lg border border-rose-500/20 bg-rose-500/[0.07] px-2.5 py-2 text-[10px] leading-relaxed text-rose-200">
-            {error}
+        {error ? (
+          <div className="flex items-start gap-2 rounded-lg border border-rose-500/20 bg-rose-500/[0.07] px-2.5 py-2 text-[10px] leading-relaxed text-rose-200">
+            <p className="min-w-0 flex-1 break-words">{error}</p>
+            <button
+              type="button"
+              onClick={() => void handleCopyError()}
+              aria-label={errorCopied ? "Error copied" : "Copy error"}
+              title={errorCopied ? "Copied" : "Copy error"}
+              className="shrink-0 rounded p-1 text-rose-200/70 transition hover:bg-rose-400/10 hover:text-rose-100"
+            >
+              {errorCopied ? (
+                <Check className="h-3.5 w-3.5" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </button>
           </div>
         ) : null}
         {timeoutDeadline !== null ? (
@@ -623,11 +729,19 @@ export function LocalAiAssistant() {
             aria-label="Floor-plan generation timeout"
           >
             <p className="font-medium">
-              Generation is taking longer than expected. Should we cancel?
+              {retryPrompt
+                ? `${retryPrompt.stage} failed ${retryPrompt.attempts} times (batch ${retryPrompt.batch}). Continue with five more attempts or abort?`
+                : "Generation is taking longer than expected. Should we cancel?"}
             </p>
+            {retryPrompt ? (
+              <p className="mt-1 break-words text-amber-100/70">
+                Last error: {retryPrompt.error}
+              </p>
+            ) : null}
             <p className="mt-1 text-amber-100/70">
-              It will be canceled in {timeoutSecondsLeft} seconds if you don’t
-              respond.
+              {retryPrompt
+                ? `Generation will abort in ${timeoutSecondsLeft} seconds if you don’t respond.`
+                : `It will be canceled in ${timeoutSecondsLeft} seconds if you don’t respond.`}
             </p>
             <div className="mt-2 flex justify-end gap-2">
               <button
@@ -635,14 +749,14 @@ export function LocalAiAssistant() {
                 onClick={() => resolveTimeoutPrompt(false)}
                 className="rounded-md border border-line px-2 py-1 text-slate-300 transition hover:bg-white/5"
               >
-                Cancel request
+                {retryPrompt ? "Abort generation" : "Cancel request"}
               </button>
               <button
                 type="button"
                 onClick={() => resolveTimeoutPrompt(true)}
                 className="rounded-md border border-amber-300/30 bg-amber-300/10 px-2 py-1 text-amber-100 transition hover:bg-amber-300/20"
               >
-                Keep waiting
+                {retryPrompt ? "Continue (5 more)" : "Keep waiting"}
               </button>
             </div>
           </div>
@@ -801,6 +915,35 @@ export function LocalAiAssistant() {
             </button>
           )}
         </div>
+        {mode === "generate" ? (
+          <details className="mt-3 rounded-lg border border-line/70 bg-black/15 px-2.5 py-2">
+            <summary className="cursor-pointer text-[10px] font-medium text-slate-400 hover:text-slate-200">
+              Paste AI JSON response
+            </summary>
+            <p className="mt-2 text-[9px] leading-relaxed text-slate-500">
+              Paste the semantic JSON object (code fences are okay). It will be
+              validated and converted into an editable floor-plan draft.
+            </p>
+            <textarea
+              value={manualJson}
+              onChange={(event) => setManualJson(event.currentTarget.value)}
+              rows={5}
+              disabled={streaming}
+              placeholder='{"grid_unit_m":0.5,"entrance_room":"living","rooms":[...],"links":[]}'
+              aria-label="Paste AI floor-plan JSON response"
+              className="mt-2 max-h-40 min-h-[90px] w-full resize-y rounded-lg border border-line bg-black/30 px-2.5 py-2 font-mono text-[10px] leading-relaxed text-slate-100 outline-none placeholder:text-slate-600 focus:border-accent/50 focus:ring-2 focus:ring-accent/10 disabled:opacity-50"
+            />
+            <button
+              type="button"
+              onClick={handlePasteJson}
+              disabled={streaming || !manualJson.trim()}
+              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 py-1.5 text-[10px] font-medium text-violet-100 transition hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Sparkles className="h-3 w-3" />
+              Build editable draft
+            </button>
+          </details>
+        ) : null}
         <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500">
           <span>
             {status?.online
