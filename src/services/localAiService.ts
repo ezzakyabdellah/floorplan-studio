@@ -288,7 +288,7 @@ export async function generateLocalJson(
       body: JSON.stringify({
         model,
         prompt,
-        stream: false,
+        stream: Boolean(options.onChunk),
         format,
         options: {
           temperature: 0.1,
@@ -306,14 +306,64 @@ export async function generateLocalJson(
       );
     }
 
-    const payload = (await response.json()) as { response?: string; error?: string };
-    if (payload.error) throw new Error(payload.error);
-    if (typeof payload.response !== "string" || !payload.response.trim()) {
-      throw new Error("Ollama returned an empty JSON furniture suggestion.");
+    let output = "";
+    if (options.onChunk) {
+      const parseLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        let payload: { response?: string; error?: string };
+        try {
+          payload = JSON.parse(trimmed) as {
+            response?: string;
+            error?: string;
+          };
+        } catch {
+          return;
+        }
+        if (payload.error) throw new Error(payload.error);
+        if (typeof payload.response === "string") {
+          output += payload.response;
+          options.onChunk?.(payload.response);
+        }
+      };
+
+      if (response.body && typeof response.body.getReader === "function") {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
+            for (const line of lines) parseLine(line);
+          }
+          buffer += decoder.decode();
+          parseLine(buffer);
+        } finally {
+          reader.releaseLock();
+        }
+      } else {
+        const text = await response.text();
+        for (const line of text.split("\n")) parseLine(line);
+      }
+    } else {
+      const payload = (await response.json()) as {
+        response?: string;
+        error?: string;
+      };
+      if (payload.error) throw new Error(payload.error);
+      if (typeof payload.response === "string") output = payload.response;
     }
-    const output = payload.response.trim();
-    await logAiOutput(operation, model, output);
-    return output;
+
+    if (!output.trim()) {
+      throw new Error("Ollama returned an empty JSON response.");
+    }
+    const result = output.trim();
+    await logAiOutput(operation, model, result);
+    return result;
   } catch (error) {
     await logAiError(operation, model, error);
     throw error;

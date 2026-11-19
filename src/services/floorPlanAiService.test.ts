@@ -6,65 +6,109 @@ import {
 
 afterEach(() => vi.unstubAllGlobals());
 
-const rectangleResponse = {
+const roomPlanResponse = {
   name: "Garden Flat",
-  walls: [
-    { x1: 0, y1: 0, x2: 20, y2: 0, thickness: 0.5, height: 8 },
-    { x1: 20, y1: 0, x2: 20, y2: 15, thickness: 0.5, height: 8 },
-    { x1: 20, y1: 15, x2: 0, y2: 15, thickness: 0.5, height: 8 },
-    { x1: 0, y1: 15, x2: 0, y2: 0, thickness: 0.5, height: 8 },
+  width: 30,
+  depth: 24,
+  rooms: [
+    {
+      name: "Living room",
+      x: 0,
+      y: 0,
+      width: 18,
+      depth: 14,
+      openTo: ["Kitchen"],
+    },
+    {
+      name: "Kitchen",
+      x: 18,
+      y: 0,
+      width: 12,
+      depth: 14,
+      openTo: ["Living room"],
+    },
+    {
+      name: "Bedroom 1",
+      x: 0,
+      y: 14,
+      width: 10,
+      depth: 10,
+      openTo: [],
+    },
+    {
+      name: "Bedroom 2",
+      x: 10,
+      y: 14,
+      width: 10,
+      depth: 10,
+      openTo: [],
+    },
+    {
+      name: "Bathroom",
+      x: 20,
+      y: 14,
+      width: 10,
+      depth: 10,
+      openTo: [],
+    },
   ],
   openings: [
-    { wallIndex: 2, type: "door", position: 0.5, width: 3 },
-    { wallIndex: 0, type: "window", position: 0.5, width: 4 },
+    { room: "Living room", side: "south", type: "door", position: 0.5, width: 3 },
+    { room: "Bedroom 1", side: "south", type: "door", position: 0.5, width: 3 },
+    { room: "Bedroom 2", side: "south", type: "door", position: 0.5, width: 3 },
+    { room: "Bathroom", side: "west", type: "door", position: 0.5, width: 3 },
+    { room: "Bedroom 1", side: "west", type: "window", position: 0.5, width: 4 },
   ],
 };
 
 describe("AI floor-plan generation", () => {
-  it("normalizes generated walls and attaches openings to the referenced wall", () => {
-    const plan = parseGeneratedFloorPlan(JSON.stringify(rectangleResponse));
+  it("derives clean wall geometry from semantic room rectangles", () => {
+    const plan = parseGeneratedFloorPlan(JSON.stringify(roomPlanResponse));
+
     expect(plan.name).toBe("Garden Flat");
-    expect(plan.walls).toHaveLength(4);
-    expect(plan.openings).toMatchObject([
-      { wallId: "ai-wall-3", type: "door", positionOnWall: 0.5, width: 3 },
-      { wallId: "ai-wall-1", type: "window", positionOnWall: 0.5, width: 4 },
-    ]);
+    expect(plan.walls.length).toBeGreaterThan(4);
+    expect(plan.walls.every((wall) => wall.x1 === wall.x2 || wall.y1 === wall.y2)).toBe(true);
+    expect(plan.walls.every((wall) =>
+      [wall.x1, wall.y1, wall.x2, wall.y2].every((value) => Number.isFinite(value)),
+    )).toBe(true);
+    expect(plan.openings).toHaveLength(5);
+    expect(plan.openings.every((opening) =>
+      plan.walls.some((wall) => wall.id === opening.wallId),
+    )).toBe(true);
+    expect(plan.walls.some(
+      (wall) =>
+        Math.abs(wall.x1 - 18) < 0.1 &&
+        Math.abs(wall.x2 - 18) < 0.1 &&
+        Math.abs(wall.y1) < 0.1 &&
+        Math.abs(wall.y2 - 14) < 0.1,
+    )).toBe(false); // Living room and kitchen are intentionally open to each other.
   });
 
-  it("rejects unsafe wall dimensions and invalid opening references", () => {
-    const tooLarge = structuredClone(rectangleResponse);
-    tooLarge.walls[0].x2 = 400;
-    expect(() => parseGeneratedFloorPlan(JSON.stringify(tooLarge))).toThrow(
-      "outside the supported",
+  it("honors explicit footprint dimensions and room counts", () => {
+    const plan = parseGeneratedFloorPlan(
+      JSON.stringify(roomPlanResponse),
+      "2-bedroom, 24 x 20 ft home",
     );
+    expect(Math.max(...plan.walls.flatMap((wall) => [wall.x1, wall.x2]))).toBe(24);
+    expect(Math.max(...plan.walls.flatMap((wall) => [wall.y1, wall.y2]))).toBe(20);
+  });
 
-    const invalidOpening = structuredClone(rectangleResponse);
-    invalidOpening.openings[0].wallIndex = 10;
+  it("rejects overlapping rooms and room counts that contradict the request", () => {
+    const overlapping = structuredClone(roomPlanResponse);
+    overlapping.rooms[1].x = 17;
     expect(() =>
-      parseGeneratedFloorPlan(JSON.stringify(invalidOpening)),
-    ).toThrow("invalid wall or opening data");
+      parseGeneratedFloorPlan(JSON.stringify(overlapping)),
+    ).toThrow("overlap");
+
+    expect(() =>
+      parseGeneratedFloorPlan(
+        JSON.stringify(roomPlanResponse),
+        "3-bedroom, 30 x 24 ft home",
+      ),
+    ).toThrow("asks for 3");
   });
 
-  it("rejects openings that overlap a wall endpoint", () => {
-    const plan = structuredClone(rectangleResponse);
-    plan.openings[0].position = 0.01;
-    expect(() => parseGeneratedFloorPlan(JSON.stringify(plan))).toThrow(
-      "does not fit safely",
-    );
-  });
-
-  it("rejects openings that overlap on the same wall", () => {
-    const plan = structuredClone(rectangleResponse);
-    plan.openings = [
-      { wallIndex: 0, type: "door", position: 0.5, width: 3 },
-      { wallIndex: 0, type: "window", position: 0.55, width: 4 },
-    ];
-    expect(() => parseGeneratedFloorPlan(JSON.stringify(plan))).toThrow(
-      "overlaps another opening",
-    );
-  });
-
-  it("requests structured, bounded JSON from the selected local model", async () => {
+  it("requests a room-level structured layout from the selected local model", async () => {
     const requests: RequestInit[] = [];
     vi.stubGlobal(
       "fetch",
@@ -72,22 +116,58 @@ describe("AI floor-plan generation", () => {
         if (init) requests.push(init);
         return {
           ok: true,
-          json: async () => ({ response: JSON.stringify(rectangleResponse) }),
+          json: async () => ({ response: JSON.stringify(roomPlanResponse) }),
         };
       }),
     );
 
     const plan = await generateFloorPlanFromPrompt(
-      "A 20 by 15 foot one-bedroom flat with a living room",
+      "A 30 by 24 foot home with two bedrooms",
       { model: "qwen2.5" },
     );
 
     expect(plan.name).toBe("Garden Flat");
     const body = JSON.parse(requests[0].body as string);
     expect(body.model).toBe("qwen2.5");
-    expect(body.format.type).toBe("object");
-    expect(body.prompt).toContain("Request:");
+    expect(body.format.properties.rooms.items.properties).toHaveProperty("openTo");
+    expect(body.prompt).toContain("non-overlapping rectangle");
     expect(body.options.num_predict).toBe(3072);
     expect(body.options.num_ctx).toBe(8192);
+  });
+
+  it("streams the room-level response and builds deterministic walls", async () => {
+    const responseText = JSON.stringify(roomPlanResponse);
+    const pieces = [
+      responseText.slice(0, 24),
+      responseText.slice(24, 80),
+      responseText.slice(80),
+    ];
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const piece of pieces) {
+          controller.enqueue(
+            new TextEncoder().encode(`${JSON.stringify({ response: piece })}\n`),
+          );
+        }
+        controller.close();
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        body: stream,
+      })),
+    );
+    const chunks: string[] = [];
+
+    const plan = await generateFloorPlanFromPrompt(
+      "2-bedroom, 30×24 ft home",
+      { onChunk: (chunk) => chunks.push(chunk) },
+    );
+
+    expect(chunks).toEqual(pieces);
+    expect(plan.name).toBe("Garden Flat");
+    expect(plan.walls.length).toBeGreaterThan(4);
   });
 });

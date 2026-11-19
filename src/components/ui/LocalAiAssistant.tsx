@@ -34,6 +34,8 @@ type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  liveOutput?: string;
+  streamingOutput?: boolean;
   plan?: GeneratedFloorPlan;
   applied?: boolean;
 };
@@ -294,7 +296,9 @@ export function LocalAiAssistant() {
       {
         id: assistantId,
         role: "assistant",
-        content: "Designing a draft from your requirements…",
+        content: "Drafting your floor plan…",
+        liveOutput: "",
+        streamingOutput: true,
       },
     ]);
     setStreaming(true);
@@ -306,6 +310,17 @@ export function LocalAiAssistant() {
       const plan = await generateFloorPlanFromPrompt(request, {
         model,
         signal: controller.signal,
+        onChunk: (chunk) =>
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === assistantId
+                ? {
+                    ...message,
+                    liveOutput: `${message.liveOutput ?? ""}${chunk}`,
+                  }
+                : message,
+            ),
+          ),
         onTimeout: (respond) => {
           setAiOpen(true);
           timeoutDecisionRef.current = respond;
@@ -322,6 +337,7 @@ export function LocalAiAssistant() {
             ? {
                 ...message,
                 content: `Draft ready: ${plan.name}. Review the geometry, then apply it to replace the current plan.`,
+                streamingOutput: false,
                 plan,
               }
             : message,
@@ -343,6 +359,7 @@ export function LocalAiAssistant() {
                     ? "Generation canceled because there was no response to the timeout prompt."
                     : "Generation stopped."
                   : `Could not generate the plan: ${detail}`,
+                streamingOutput: false,
               }
             : message,
         ),
@@ -640,6 +657,19 @@ export function LocalAiAssistant() {
               {message.content ||
                 (streaming ? "Thinking locally…" : "No response.")}
             </p>
+            {message.liveOutput ? (
+              <details
+                open={message.streamingOutput}
+                className="mt-2 rounded-lg border border-line/70 bg-black/20 px-2.5 py-2"
+              >
+                <summary className="cursor-pointer text-[9px] font-medium text-slate-500">
+                  {message.streamingOutput ? "Live AI response" : "AI response"}
+                </summary>
+                <pre className="mt-2 whitespace-pre-wrap break-all font-mono text-[9px] leading-relaxed text-slate-400">
+                  {message.liveOutput}
+                </pre>
+              </details>
+            ) : null}
             {message.plan ? (
               <div className="mt-2.5 rounded-lg border border-violet-400/20 bg-violet-500/[0.06] p-2.5">
                 <div className="flex items-center justify-between gap-2 text-[10px]">
