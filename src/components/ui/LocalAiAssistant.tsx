@@ -712,6 +712,13 @@ export function LocalAiAssistant() {
                 <p className="mt-1 text-[9px] leading-relaxed text-slate-500">
                   Applying replaces the current walls and openings.
                 </p>
+                {message.plan.warnings.length > 0 ? (
+                  <ul className="mt-2 space-y-1 text-[9px] leading-relaxed text-amber-200/80">
+                    {message.plan.warnings.map((warning, index) => (
+                      <li key={`${warning}-${index}`}>• {warning}</li>
+                    ))}
+                  </ul>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => handleApplyPlan(message.id, message.plan!)}
