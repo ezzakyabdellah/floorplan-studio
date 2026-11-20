@@ -298,6 +298,40 @@ describe("iterative semantic AI floor-plan generation", () => {
     ).toBe(true);
   });
 
+  it("keeps a disconnecting link removal instead of discarding the repair patch", async () => {
+    const program = {
+      grid_unit_m: 0.5,
+      entrance_room: "living",
+      rooms: [
+        { id: "living", type: "living_room", area_m2: 0.25, zone: "front" },
+        { id: "bed", type: "bedroom", area_m2: 25, zone: "private" },
+      ],
+    };
+    const links = {
+      links: [{ from: "living", to: "bed", connection: "door" }],
+    };
+    const windows = {
+      windows: [
+        { room_id: "living", count: 0 },
+        { room_id: "bed", count: 0 },
+      ],
+    };
+    const repairPatch = {
+      room_updates: [{ id: "living", zone: null, area_m2: 3 }],
+      link_updates: [],
+      link_removals: [{ from: "living", to: "bed" }],
+    };
+    const requests = stubPasses([program, links, windows, repairPatch]);
+
+    const plan = await generateFloorPlanFromPrompt("A tiny living room with a bedroom");
+
+    expect(requests).toHaveLength(4);
+    expect(plan.rooms.find((room) => room.id === "living")?.area_m2).toBe(3);
+    expect(
+      plan.warnings.some((warning) => warning.includes("kept the link between")),
+    ).toBe(true);
+  });
+
   it("rejects invalid room references and disconnected graphs in merged JSON", () => {
     expect(() =>
       parseGeneratedFloorPlan(

@@ -504,6 +504,14 @@ export async function runGeminiGenerate(
     );
   }
 
+  if (finishReason === "MAX_TOKENS") {
+    throw new GeminiRequestError(
+      502,
+      "UPSTREAM_ERROR",
+      "Gemini stopped at the output token limit before finishing the response. The result was truncated; increase maxOutputTokens or shorten the prompt.",
+    );
+  }
+
   return {
     text,
     model: modelVersion || input.model,

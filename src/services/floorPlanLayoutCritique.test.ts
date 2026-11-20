@@ -47,7 +47,18 @@ describe("floor-plan geometry critique", () => {
       ],
       links: [],
     };
-    const solved = solveFloorPlanLayout(semantic);
+    const solved: SolvedFloorPlan = {
+      rooms: [
+        { id: "top", type: "living_room", zone: "front", area_m2: 100, x_m: 0, y_m: 0, width_m: 20, height_m: 5 },
+        { id: "bath", type: "bathroom", zone: "core", area_m2: 25, x_m: 0, y_m: 5, width_m: 5, height_m: 5 },
+        { id: "middle", type: "bedroom", zone: "core", area_m2: 25, x_m: 5, y_m: 5, width_m: 5, height_m: 5 },
+        { id: "right", type: "bedroom", zone: "core", area_m2: 25, x_m: 10, y_m: 5, width_m: 5, height_m: 5 },
+        { id: "bottom", type: "bedroom", zone: "private", area_m2: 100, x_m: 0, y_m: 10, width_m: 20, height_m: 5 },
+      ],
+      walls: [],
+      openings: [],
+      warnings: [],
+    };
     const diagnostics = critiqueFloorPlanLayout(semantic, solved);
 
     expect(diagnosticCodes(diagnostics)).toContain("no-exterior-wall");
@@ -72,7 +83,17 @@ describe("floor-plan geometry critique", () => {
         { from: "entry", to: "bedroom", connection: "door" },
       ],
     };
-    const solved = solveFloorPlanLayout(semantic);
+    const solved: SolvedFloorPlan = {
+      rooms: [
+        { id: "entry", type: "living_room", zone: "front", area_m2: 25, x_m: 0, y_m: 0, width_m: 5, height_m: 5 },
+        { id: "hall", type: "hallway", zone: "core", area_m2: 25, x_m: 6, y_m: 0, width_m: 5, height_m: 5 },
+        { id: "utility", type: "utility", zone: "service", area_m2: 25, x_m: 0, y_m: 6, width_m: 5, height_m: 5 },
+        { id: "bedroom", type: "bedroom", zone: "private", area_m2: 25, x_m: 6, y_m: 6, width_m: 5, height_m: 5 },
+      ],
+      walls: [],
+      openings: [],
+      warnings: [],
+    };
 
     expect(diagnosticCodes(critiqueFloorPlanLayout(semantic, solved))).toContain(
       "missing-shared-wall",
@@ -87,6 +108,41 @@ describe("floor-plan geometry critique", () => {
     expect(
       diagnosticCodes(critiqueFloorPlanLayout(tiny, solveFloorPlanLayout(tiny))),
     ).toContain("area-drift");
+  });
+
+  it("reports a shared wall without a door and an unreachable room", () => {
+    const semantic: SemanticFloorPlan = {
+      grid_unit_m: 0.5,
+      entrance_room: "living",
+      rooms: [
+        { id: "living", type: "living_room", area_m2: 25, zone: "front", windows: 0 },
+        { id: "bedroom", type: "bedroom", area_m2: 25, zone: "private", windows: 0 },
+      ],
+      links: [{ from: "living", to: "bedroom", connection: "door" }],
+    };
+    const solved: SolvedFloorPlan = {
+      rooms: [
+        { id: "living", type: "living_room", zone: "front", area_m2: 25, x_m: 0, y_m: 0, width_m: 5, height_m: 5 },
+        { id: "bedroom", type: "bedroom", zone: "private", area_m2: 25, x_m: 5, y_m: 0, width_m: 5, height_m: 5 },
+      ],
+      walls: [
+        {
+          id: "shared",
+          x1: 5 / 0.3048,
+          y1: 0,
+          x2: 5 / 0.3048,
+          y2: 5 / 0.3048,
+          thickness: 0.5,
+          height: 8,
+        },
+      ],
+      openings: [],
+      warnings: [],
+    };
+    const codes = diagnosticCodes(critiqueFloorPlanLayout(semantic, solved));
+
+    expect(codes).toContain("link-without-opening");
+    expect(codes).toContain("unreachable-room");
   });
 
   it("reports overlaps and disconnected geometry", () => {

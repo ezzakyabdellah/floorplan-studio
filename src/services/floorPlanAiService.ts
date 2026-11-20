@@ -636,7 +636,36 @@ function validateRepairPatch(value: unknown, plan: SemanticFloorPlan): RepairPat
   return { room_updates: roomUpdates, link_updates: linkUpdates, link_removals: linkRemovals };
 }
 
-function applyRepairPatch(plan: SemanticFloorPlan, patch: RepairPatch) {
+function linksKeepRoomsConnected(
+  rooms: SemanticRoom[],
+  links: SemanticLink[],
+) {
+  if (rooms.length === 0) return true;
+  const adjacency = new Map<string, Set<string>>(
+    rooms.map((room) => [room.id, new Set<string>()]),
+  );
+  for (const link of links) {
+    adjacency.get(link.from)?.add(link.to);
+    adjacency.get(link.to)?.add(link.from);
+  }
+  const reached = new Set([rooms[0].id]);
+  const queue = [rooms[0].id];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    for (const neighbour of adjacency.get(id) ?? []) {
+      if (reached.has(neighbour)) continue;
+      reached.add(neighbour);
+      queue.push(neighbour);
+    }
+  }
+  return reached.size === rooms.length;
+}
+
+function applyRepairPatch(
+  plan: SemanticFloorPlan,
+  patch: RepairPatch,
+  warnings: string[] = [],
+) {
   const rooms = plan.rooms.map((room) => {
     const update = patch.room_updates.find((candidate) => candidate.id === room.id);
     return update
@@ -651,7 +680,10 @@ function applyRepairPatch(plan: SemanticFloorPlan, patch: RepairPatch) {
   const removedPairs = new Set(
     patch.link_removals.map((link) => pairKey(link.from, link.to)),
   );
-  const links = plan.links.filter(
+  const removedLinks = plan.links.filter((link) =>
+    removedPairs.has(pairKey(link.from, link.to)),
+  );
+  let links = plan.links.filter(
     (link) => !removedPairs.has(pairKey(link.from, link.to)),
   );
   for (const update of patch.link_updates) {
@@ -661,6 +693,21 @@ function applyRepairPatch(plan: SemanticFloorPlan, patch: RepairPatch) {
     if (existingIndex >= 0) links[existingIndex] = update;
     else links.push(update);
   }
+
+  // Reverting removals is always enough to restore the original connectivity,
+  // so a patch can no longer be discarded just because one removal was unsafe.
+  for (let index = removedLinks.length - 1; index >= 0; index -= 1) {
+    if (linksKeepRoomsConnected(rooms, links)) break;
+    const restored = removedLinks[index];
+    links = [
+      ...links,
+      restored,
+    ];
+    warnings.push(
+      `Layout repair kept the link between "${restored.from}" and "${restored.to}" because removing it would disconnect the plan.`,
+    );
+  }
+
   return validateSemanticFloorPlan({
     grid_unit_m: plan.grid_unit_m,
     entrance_room: plan.entrance_room,
@@ -778,7 +825,7 @@ async function solveWithBoundedRepair(
         (value) => validateRepairPatch(value, plan),
         options,
         `layout-repair-${retry}`,
-        600,
+        1024,
       );
       if (!patchChangesPlan(plan, patchValue)) {
         repairWarnings.push(
@@ -786,7 +833,7 @@ async function solveWithBoundedRepair(
         );
         break;
       }
-      plan = applyRepairPatch(plan, patchValue);
+      plan = applyRepairPatch(plan, patchValue, repairWarnings);
       solved = solveFloorPlanLayout(plan);
       diagnostics = critiqueFloorPlanLayout(plan, solved);
     } catch (error) {
@@ -930,12 +977,16 @@ function buildCorrectionPrompt(
   error: string,
   stage: string,
 ) {
+  const outputForPrompt =
+    existingOutput.length > 6_000
+      ? `${existingOutput.slice(0, 6_000)}\n…(output truncated for the retry)`
+      : existingOutput || "(no output was returned)";
   return [
     originalPrompt,
     "",
     `CORRECTION REQUIRED for ${stage}: Fix the existing output; do not ignore the validation error or start a different design.`,
     `Validation/runtime error: ${error}`,
-    `Existing output to repair: ${existingOutput || "(no output was returned)"}`,
+    `Existing output to repair: ${outputForPrompt}`,
     "Preserve all valid values. Correct only what is necessary, then return the complete JSON object matching the supplied schema.",
   ].join("\n");
 }
@@ -951,7 +1002,7 @@ async function generatePlan(
       validateRoomProgram,
       options,
       "pass-1-room-program",
-      900,
+      2048,
     ),
   );
   options.onChunk?.("\n[Room program validated.]\n");
@@ -962,7 +1013,7 @@ async function generatePlan(
     (value) => validateLinks(value, roomProgram),
     options,
     "pass-2-circulation",
-    700,
+    1536,
   );
   options.onChunk?.("\n[Connected room graph validated.]\n");
 
@@ -972,7 +1023,7 @@ async function generatePlan(
     (value) => validateWindowAssignments(value, roomProgram),
     options,
     "pass-3-windows",
-    700,
+    1024,
   );
   options.onChunk?.("\n[Window assignments validated.]\n");
 

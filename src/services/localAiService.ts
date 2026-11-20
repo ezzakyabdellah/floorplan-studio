@@ -126,6 +126,7 @@ async function streamOllama(
     }
 
     let fullText = "";
+    let doneReason: string | undefined;
     const emit = (chunk: string) => {
       if (!chunk) return;
       fullText += chunk;
@@ -135,13 +136,18 @@ async function streamOllama(
     const parseLine = (line: string) => {
       const trimmed = line.trim();
       if (!trimmed) return;
-      let payload: { response?: string; error?: string };
+      let payload: { response?: string; error?: string; done_reason?: string };
       try {
-        payload = JSON.parse(trimmed) as { response?: string; error?: string };
+        payload = JSON.parse(trimmed) as {
+          response?: string;
+          error?: string;
+          done_reason?: string;
+        };
       } catch {
         return;
       }
       if (payload.error) throw new Error(payload.error);
+      if (payload.done_reason) doneReason = payload.done_reason;
       if (typeof payload.response === "string") emit(payload.response);
     };
 
@@ -171,6 +177,11 @@ async function streamOllama(
 
     if (!fullText.trim()) {
       throw new Error("Ollama returned an empty response.");
+    }
+    if (doneReason === "length") {
+      throw new Error(
+        "Ollama stopped at the output token limit before finishing the response. Increase num_predict.",
+      );
     }
     const output = fullText.trim();
     await logAiOutput(operation, model, output);
@@ -276,20 +287,27 @@ export async function generateLocalJson(
     }
 
     let output = "";
+    let doneReason: string | undefined;
     if (options.onChunk) {
       const parseLine = (line: string) => {
         const trimmed = line.trim();
         if (!trimmed) return;
-        let payload: { response?: string; error?: string };
+        let payload: {
+          response?: string;
+          error?: string;
+          done_reason?: string;
+        };
         try {
           payload = JSON.parse(trimmed) as {
             response?: string;
             error?: string;
+            done_reason?: string;
           };
         } catch {
           return;
         }
         if (payload.error) throw new Error(payload.error);
+        if (payload.done_reason) doneReason = payload.done_reason;
         if (typeof payload.response === "string") {
           output += payload.response;
           options.onChunk?.(payload.response);
@@ -322,13 +340,20 @@ export async function generateLocalJson(
       const payload = (await response.json()) as {
         response?: string;
         error?: string;
+        done_reason?: string;
       };
       if (payload.error) throw new Error(payload.error);
+      if (payload.done_reason) doneReason = payload.done_reason;
       if (typeof payload.response === "string") output = payload.response;
     }
 
     if (!output.trim()) {
       throw new Error("Ollama returned an empty JSON response.");
+    }
+    if (doneReason === "length") {
+      throw new Error(
+        "Ollama stopped at the output token limit before finishing the JSON response. Increase num_predict.",
+      );
     }
     const result = output.trim();
     await logAiOutput(operation, model, result);

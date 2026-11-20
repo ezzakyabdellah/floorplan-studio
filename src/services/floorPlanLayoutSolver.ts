@@ -46,25 +46,6 @@ export type SolvedFloorPlan = {
   warnings: string[];
 };
 
-type RoomSize = {
-  room: SemanticRoom;
-  candidateHeights: Map<number, number>;
-};
-
-type LayoutRow = {
-  zone: RoomZone;
-  rooms: Array<{ room: SemanticRoom; widthSteps: number }>;
-  heightSteps: number;
-};
-
-type RoomEdge = {
-  roomId: string;
-  axis: "horizontal" | "vertical";
-  coordinate: number;
-  start: number;
-  end: number;
-};
-
 type WallSegment = {
   axis: "horizontal" | "vertical";
   coordinate: number;
@@ -74,340 +55,706 @@ type WallSegment = {
   wall: Wall;
 };
 
+type LayoutRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type Envelope = {
+  width: number;
+  height: number;
+};
+
+type LayoutItem = {
+  room: SemanticRoom;
+  area: number;
+};
+
+type SplitCandidate = {
+  left: LayoutRect;
+  right: LayoutRect;
+  splitIndex: number;
+  cost: number;
+};
+
+type ScoredLayout = {
+  order: SemanticRoom[];
+  envelope: Envelope;
+  rects: Map<string, LayoutRect>;
+  satisfiedLinks: number;
+  satisfiedWeight: number;
+  minCompliant: boolean;
+  windowCompliant: boolean;
+  aspectCompliant: boolean;
+  score: number;
+};
+
 const METERS_TO_FEET = 1 / 0.3048;
+const FEET_TO_METERS = 0.3048;
+const EPSILON = 1e-6;
 const MIN_ROOM_DIMENSION_M = 1;
+const MIN_LAYOUT_AREA_M2 = MIN_ROOM_DIMENSION_M * MIN_ROOM_DIMENSION_M;
 const MIN_OPENING_WIDTH_M = 0.6;
 const DOOR_WIDTH_M = 0.9;
 const OPENING_WIDTH_M = 1.5;
 const WINDOW_WIDTH_M = 1.2;
 const OPENING_END_CLEARANCE_M = 0.05;
 const OPENING_SPACING_M = 0.25;
+const MIN_SHARED_WALL_M =
+  MIN_OPENING_WIDTH_M + OPENING_END_CLEARANCE_M * 2;
+
+const LINK_BONUS = 5_000_000;
+const MISSING_LINK_PENALTY = 250_000;
+const ASPECT_HARD_PENALTY = 120_000;
+const MIN_DIMENSION_PENALTY = 1_500_000;
+const WINDOW_REQUEST_PENALTY = 150_000;
+const WINDOW_CAPACITY_PENALTY = 120_000;
+const AREA_ERROR_WEIGHT = 40_000;
+const ENTRANCE_FRONT_PENALTY = 2_000_000;
+const ENTRANCE_SIDE_PENALTY = 60_000;
+
+const CIRCULATION_ROOM = /hall|corridor|landing|stair|passage|foyer|entry|entrance|vestibule/i;
+const ZONE_ORDER: RoomZone[] = ["front", "core", "service", "private"];
 
 function compareStrings(a: string, b: string) {
   return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function roundGridSteps(value: number) {
-  return Number(value.toFixed(8));
 }
 
 function meterToFeet(value: number) {
   return Number((value * METERS_TO_FEET).toFixed(6));
 }
 
-const ROOM_ASPECT_MIN = 0.5;
-const ROOM_ASPECT_MAX = 2;
-const AREA_ERROR_WEIGHT = 6;
-
-function roomHeightOptions(room: SemanticRoom, grid: number) {
-  const minSteps = Math.max(1, Math.ceil(MIN_ROOM_DIMENSION_M / grid));
-  const maxSteps = Math.max(
-    minSteps,
-    Math.ceil(Math.sqrt(Math.max(room.area_m2, 1)) / grid) + minSteps * 2,
-  );
-  const candidates = new Map<number, number>();
-  for (let heightSteps = minSteps; heightSteps <= maxSteps; heightSteps += 1) {
-    const rawWidthSteps = room.area_m2 / (heightSteps * grid * grid);
-    if (rawWidthSteps > heightSteps * ROOM_ASPECT_MAX + 1e-9) continue;
-    const widthSteps = Math.max(
-      minSteps,
-      Math.ceil(heightSteps * ROOM_ASPECT_MIN - 1e-9),
-      Math.ceil(rawWidthSteps - 1e-8),
-    );
-    if (widthSteps <= heightSteps * ROOM_ASPECT_MAX + 1e-9) {
-      candidates.set(heightSteps, widthSteps);
-    }
-  }
-  if (candidates.size === 0) {
-    const heightSteps = Math.max(
-      minSteps,
-      Math.ceil(Math.sqrt(Math.max(room.area_m2, 1) / ROOM_ASPECT_MAX) / grid),
-    );
-    const widthSteps = Math.max(
-      minSteps,
-      Math.ceil(room.area_m2 / (heightSteps * grid * grid) - 1e-8),
-      Math.ceil(heightSteps * ROOM_ASPECT_MIN - 1e-9),
-    );
-    candidates.set(heightSteps, widthSteps);
-  }
-  return candidates;
+function roundMeters(value: number) {
+  return Number(value.toFixed(6));
 }
 
-function chooseHeightStep(
-  roomSizes: RoomSize[],
-  possibleHeights: Set<number>,
-  grid: number,
-) {
-  return [...possibleHeights].sort((a, b) => {
-    const score = (heightSteps: number) =>
-      roomSizes.reduce((total, item) => {
-        const widthSteps = item.candidateHeights.get(heightSteps) ?? heightSteps;
-        const solvedArea = widthSteps * heightSteps * grid * grid;
-        const areaError =
-          Math.abs(solvedArea - item.room.area_m2) / item.room.area_m2;
-        return (
-          total +
-          Math.abs(Math.log(widthSteps / heightSteps)) +
-          areaError * AREA_ERROR_WEIGHT
-        );
-      }, 0);
-    return score(a) - score(b) || a - b;
-  })[0];
+function isCirculationRoom(room: SemanticRoom) {
+  return CIRCULATION_ROOM.test(`${room.id} ${room.type}`);
+}
+
+function layoutAreaOf(room: SemanticRoom) {
+  return Math.max(room.area_m2, MIN_LAYOUT_AREA_M2);
+}
+
+function zoneRank(room: SemanticRoom) {
+  return ZONE_ORDER.indexOf(room.zone);
+}
+
+function sharedEdgeLength(a: LayoutRect, b: LayoutRect) {
+  const verticalTouch =
+    Math.abs(a.x + a.width - b.x) < EPSILON ||
+    Math.abs(b.x + b.width - a.x) < EPSILON;
+  const horizontalTouch =
+    Math.abs(a.y + a.height - b.y) < EPSILON ||
+    Math.abs(b.y + b.height - a.y) < EPSILON;
+  const verticalOverlap =
+    Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  const horizontalOverlap =
+    Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  if (verticalTouch) return Math.max(0, verticalOverlap);
+  if (horizontalTouch) return Math.max(0, horizontalOverlap);
+  return 0;
+}
+
+function touchesEnvelope(rect: LayoutRect, envelope: Envelope) {
+  return (
+    Math.abs(rect.x) < EPSILON ||
+    Math.abs(rect.y) < EPSILON ||
+    Math.abs(rect.x + rect.width - envelope.width) < EPSILON ||
+    Math.abs(rect.y + rect.height - envelope.height) < EPSILON
+  );
 }
 
 /**
- * Depth-first walk over the circulation graph. Rooms that are connected end up
- * next to each other in the ordering, so packing rows in this order keeps most
- * linked rooms on adjacent row/column positions.
+ * Usable exterior length for windows, measured against the building envelope.
  */
-function buildTraversalOrder(plan: SemanticFloorPlan) {
-  const adjacency = new Map<string, string[]>(
-    plan.rooms.map((room) => [room.id, []]),
-  );
+function exteriorWindowLength(rect: LayoutRect, envelope: Envelope) {
+  let length = 0;
+  if (Math.abs(rect.x) < EPSILON) length += rect.height;
+  if (Math.abs(rect.x + rect.width - envelope.width) < EPSILON) {
+    length += rect.height;
+  }
+  if (Math.abs(rect.y) < EPSILON) length += rect.width;
+  if (Math.abs(rect.y + rect.height - envelope.height) < EPSILON) {
+    length += rect.width;
+  }
+  return length;
+}
+
+function hashString(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function createRandom(seed: number) {
+  let state = seed || 1;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let value = Math.imul(state ^ (state >>> 15), 1 | state);
+    value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function buildAdjacency(plan: SemanticFloorPlan) {
+  const adjacency = new Map<string, string[]>();
+  for (const room of plan.rooms) adjacency.set(room.id, []);
   for (const link of plan.links) {
     adjacency.get(link.from)?.push(link.to);
     adjacency.get(link.to)?.push(link.from);
   }
-  const order = new Map<string, number>();
-  const visit = (roomId: string) => {
-    if (order.has(roomId)) return;
-    order.set(roomId, order.size);
-    for (const next of adjacency.get(roomId) ?? []) visit(next);
-  };
-  visit(plan.entrance_room);
-  for (const room of plan.rooms) visit(room.id);
-  return order;
+  return adjacency;
 }
 
-function buildRows(plan: SemanticFloorPlan) {
-  const zoneOrder: RoomZone[] = ["front", "core", "service", "private"];
-  const entrance = plan.rooms.find((room) => room.id === plan.entrance_room)!;
-  const linksBetweenZones = new Map<string, number>();
-  const zoneOf = new Map(plan.rooms.map((room) => [room.id, room.zone]));
-  for (const link of plan.links) {
-    const fromZone = zoneOf.get(link.from)!;
-    const toZone = zoneOf.get(link.to)!;
-    if (fromZone === toZone) continue;
-    const key = [fromZone, toZone].sort().join("\u0000");
-    linksBetweenZones.set(key, (linksBetweenZones.get(key) ?? 0) + 1);
-  }
-  const zoneLinkCount = (a: RoomZone, b: RoomZone) =>
-    linksBetweenZones.get([a, b].sort().join("\u0000")) ?? 0;
-  const orderedZones: RoomZone[] = [entrance.zone];
-  const presentZones = new Set(plan.rooms.map((room) => room.zone));
-  const remainingZones = new Set(
-    zoneOrder.filter(
-      (zone) => zone !== entrance.zone && presentZones.has(zone),
-    ),
-  );
-  while (remainingZones.size > 0) {
-    const previousZone = orderedZones[orderedZones.length - 1];
-    const nextZone = [...remainingZones].sort((a, b) => {
-      // Prefer the zone most tightly linked to the band just placed, then
-      // to any band already placed, then the canonical zone order.
-      const score = (zone: RoomZone) =>
-        zoneLinkCount(previousZone, zone) * 100 +
-        orderedZones.reduce(
-          (total, placed) => total + zoneLinkCount(placed, zone) * 10,
-          0,
-        );
+/**
+ * Orders rooms by walking the circulation graph from the entrance. Keeping the
+ * entrance first anchors it in the top-left tile so the main door always has
+ * an exterior wall.
+ */
+function buildSeedOrders(plan: SemanticFloorPlan): SemanticRoom[][] {
+  const byId = new Map(plan.rooms.map((room) => [room.id, room]));
+  const adjacency = buildAdjacency(plan);
+  const sorters: Array<(a: string, b: string) => number> = [
+    (a, b) =>
+      (byId.get(b)?.area_m2 ?? 0) - (byId.get(a)?.area_m2 ?? 0) ||
+      compareStrings(a, b),
+    (a, b) => {
+      const roomA = byId.get(a);
+      const roomB = byId.get(b);
+      if (!roomA || !roomB) return compareStrings(a, b);
       return (
-        score(b) - score(a) ||
-        zoneOrder.indexOf(a) - zoneOrder.indexOf(b)
+        zoneRank(roomA) - zoneRank(roomB) ||
+        roomB.area_m2 - roomA.area_m2 ||
+        compareStrings(a, b)
       );
-    })[0];
-    orderedZones.push(nextZone);
-    remainingZones.delete(nextZone);
-  }
-  const traversalOrder = buildTraversalOrder(plan);
-  const orderOf = (room: SemanticRoom) =>
-    traversalOrder.get(room.id) ?? Number.MAX_SAFE_INTEGER;
-  const rows: LayoutRow[] = [];
+    },
+    (a, b) => compareStrings(a, b),
+  ];
 
-  for (const zone of orderedZones) {
-    const remaining = plan.rooms
-      .filter((room) => room.zone === zone)
-      .sort(
-        (a, b) =>
-          orderOf(a) - orderOf(b) ||
-          b.area_m2 - a.area_m2 ||
-          compareStrings(a.id, b.id),
-      );
-    const pending = [...remaining];
+  const orders: SemanticRoom[][] = [];
+  const seen = new Set<string>();
+  const add = (ids: string[]) => {
+    const key = ids.join("\u0000");
+    if (seen.has(key)) return;
+    seen.add(key);
+    orders.push(ids.map((id) => byId.get(id)!).filter(Boolean));
+  };
 
-    while (pending.length > 0) {
-      const first = pending.shift()!;
-      const firstSize: RoomSize = {
-        room: first,
-        candidateHeights: roomHeightOptions(first, plan.grid_unit_m),
-      };
-      const rowSizes = [firstSize];
-      let possibleHeights = new Set(firstSize.candidateHeights.keys());
-
-      for (let index = 0; index < pending.length; ) {
-        const room = pending[index];
-        const candidateHeights = roomHeightOptions(room, plan.grid_unit_m);
-        const sharedHeights = new Set(
-          [...possibleHeights].filter((height) => candidateHeights.has(height)),
-        );
-        if (sharedHeights.size === 0) {
-          index += 1;
-          continue;
-        }
-        rowSizes.push({ room, candidateHeights });
-        possibleHeights = sharedHeights;
-        pending.splice(index, 1);
+  for (const sorter of sorters) {
+    const visited = new Set<string>([plan.entrance_room]);
+    const queue = [plan.entrance_room];
+    const breadthFirst: string[] = [];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      breadthFirst.push(id);
+      const next = [...(adjacency.get(id) ?? [])]
+        .filter((neighbour) => !visited.has(neighbour))
+        .sort(sorter);
+      for (const neighbour of next) {
+        visited.add(neighbour);
+        queue.push(neighbour);
       }
-
-      const heightSteps = chooseHeightStep(
-        rowSizes,
-        possibleHeights,
-        plan.grid_unit_m,
-      );
-      const orderedRooms = [...rowSizes].sort(
-        (a, b) => orderOf(a.room) - orderOf(b.room),
-      );
-      rows.push({
-        zone,
-        heightSteps,
-        rooms: orderedRooms.map((item) => ({
-          room: item.room,
-          widthSteps: item.candidateHeights.get(heightSteps)!,
-        })),
-      });
     }
+    for (const room of plan.rooms) {
+      if (!visited.has(room.id)) breadthFirst.push(room.id);
+    }
+    add(breadthFirst);
+
+    const visitedDepthFirst = new Set<string>();
+    const depthFirst: string[] = [];
+    const visit = (id: string) => {
+      if (visitedDepthFirst.has(id)) return;
+      visitedDepthFirst.add(id);
+      depthFirst.push(id);
+      const next = [...(adjacency.get(id) ?? [])]
+        .filter((neighbour) => !visitedDepthFirst.has(neighbour))
+        .sort(sorter);
+      for (const neighbour of next) visit(neighbour);
+    };
+    visit(plan.entrance_room);
+    for (const room of plan.rooms) visit(room.id);
+    add(depthFirst);
   }
-  return rows;
+
+  return orders;
 }
 
-function rowWidthSteps(row: LayoutRow) {
-  return row.rooms.reduce((total, item) => total + item.widthSteps, 0);
+function buildRandomOrders(
+  plan: SemanticFloorPlan,
+  count: number,
+  random: () => number,
+  base: SemanticRoom[],
+): SemanticRoom[][] {
+  if (plan.rooms.length <= 1) return [];
+  const orders: SemanticRoom[][] = [];
+  for (let attempt = 0; attempt < count; attempt += 1) {
+    const order = [...base];
+    for (let index = order.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(random() * (index + 1));
+      if (swapIndex === 0) continue;
+      [order[index], order[swapIndex]] = [order[swapIndex], order[index]];
+    }
+    orders.push(order);
+  }
+  return orders;
 }
 
-function alignmentScoreWithPreviousRow(
-  row: LayoutRow,
-  offsetSteps: number,
-  previousRow: PlacedRow,
-  links: SemanticLink[],
+function makeEnvelope(
+  plan: SemanticFloorPlan,
+  aspect: number,
+  grid: number,
+): Envelope {
+  const total = plan.rooms.reduce((sum, room) => sum + layoutAreaOf(room), 0);
+  const targetWidth = Math.sqrt(total * aspect);
+  let best: { width: number; height: number; cost: number } | null = null;
+
+  for (let delta = -2; delta <= 2; delta += 1) {
+    const width = Math.max(
+      grid * 2,
+      Math.max(1, Math.round(targetWidth / grid) + delta) * grid,
+    );
+    const height = Math.max(
+      grid * 2,
+      Math.ceil((total / width) / grid) * grid,
+    );
+    const excess = width * height - total;
+    const ratio = width / height;
+    const cost = (excess / Math.max(total, EPSILON)) * 10 +
+      Math.abs(ratio - aspect) * 0.5;
+    if (!best || cost < best.cost) best = { width, height, cost };
+  }
+
+  return {
+    width: roundMeters(best!.width),
+    height: roundMeters(best!.height),
+  };
+}
+
+function regionCost(rect: LayoutRect) {
+  const short = Math.max(EPSILON, Math.min(rect.width, rect.height));
+  const ratio = Math.max(rect.width, rect.height) / short;
+  return Math.max(0, ratio - 2.2) ** 2 * 5 + (ratio - 1.2) ** 2 * 0.3;
+}
+
+function clampSplit(
+  value: number,
+  minimum: number,
+  maximum: number,
   grid: number,
 ) {
-  const minimumDoorSteps = Math.ceil(
-    (MIN_OPENING_WIDTH_M + OPENING_END_CLEARANCE_M * 2) / grid - 1e-9,
-  );
-  const previousRooms = new Map(
-    previousRow.rooms.map((item) => [item.room.id, item]),
-  );
-  let score = 0;
-  let xSteps = offsetSteps;
-  for (const item of row.rooms) {
-    const endSteps = xSteps + item.widthSteps;
-    for (const link of links) {
-      const otherId =
-        link.from === item.room.id
-          ? link.to
-          : link.to === item.room.id
-            ? link.from
-            : null;
-      if (!otherId) continue;
-      const other = previousRooms.get(otherId);
-      if (!other) continue;
-      const overlap = Math.max(
-        0,
-        Math.min(endSteps, other.xSteps + other.widthSteps) -
-          Math.max(xSteps, other.xSteps),
-      );
-      if (overlap <= 0) continue;
-      // Prefer satisfying every cross-band link over one very wide overlap:
-      // each link that can fit a door earns a bonus, then overlap is capped.
-      score += Math.min(overlap, minimumDoorSteps * 2);
-      if (overlap >= minimumDoorSteps) score += 1000;
-    }
-    xSteps = endSteps;
-  }
-  return score;
+  const snapped = Number((Math.round(value / grid) * grid).toFixed(6));
+  return Math.min(maximum, Math.max(minimum, snapped));
 }
 
-type PlacedRowRoom = {
-  room: SemanticRoom;
-  xSteps: number;
-  widthSteps: number;
-};
+function placeRange(
+  items: LayoutItem[],
+  prefix: number[],
+  start: number,
+  end: number,
+  rect: LayoutRect,
+  grid: number,
+  out: Map<string, LayoutRect>,
+  random: () => number,
+  jitter: number,
+) {
+  if (end - start === 1) {
+    out.set(items[start].room.id, { ...rect });
+    return;
+  }
 
-type PlacedRow = {
-  ySteps: number;
-  heightSteps: number;
-  rooms: PlacedRowRoom[];
-};
+  const groupArea = prefix[end] - prefix[start];
+  const candidates: SplitCandidate[] = [];
 
-function buildRoomRectangles(plan: SemanticFloorPlan): SolvedRoom[] {
-  const rows = buildRows(plan);
-  const grid = plan.grid_unit_m;
-  const widestRowSteps = rows.reduce(
-    (widest, row) => Math.max(widest, rowWidthSteps(row)),
-    0,
-  );
-  const placedRows: PlacedRow[] = [];
-  const rooms: SolvedRoom[] = [];
-  let ySteps = 0;
-
-  for (const row of rows) {
-    let offsetSteps = 0;
-    if (placedRows.length > 0) {
-      const previousRow = placedRows[placedRows.length - 1];
-      // Try every alignment so linked rooms in the previous band overlap.
-      // The overlap term dominates; the offset term keeps the plan compact
-      // when several alignments score equally.
-      let bestScore = Number.NEGATIVE_INFINITY;
-      for (let candidate = 0; candidate <= widestRowSteps; candidate += 1) {
-        const alignment = alignmentScoreWithPreviousRow(
-          row,
-          candidate,
-          previousRow,
-          plan.links,
+  for (const axis of ["x", "y"] as const) {
+    if (axis === "x" && rect.width < grid * 2) continue;
+    if (axis === "y" && rect.height < grid * 2) continue;
+    for (let splitIndex = start + 1; splitIndex < end; splitIndex += 1) {
+      const fraction = (prefix[splitIndex] - prefix[start]) / groupArea;
+      let left: LayoutRect;
+      let right: LayoutRect;
+      if (axis === "x") {
+        const split = clampSplit(
+          rect.x + rect.width * fraction,
+          rect.x + grid,
+          rect.x + rect.width - grid,
           grid,
         );
-        const score = alignment * 1000 - candidate;
-        if (score > bestScore) {
-          bestScore = score;
-          offsetSteps = candidate;
+        if (split <= rect.x + EPSILON || split >= rect.x + rect.width - EPSILON) {
+          continue;
+        }
+        left = { ...rect, width: split - rect.x };
+        right = { ...rect, x: split, width: rect.x + rect.width - split };
+      } else {
+        const split = clampSplit(
+          rect.y + rect.height * fraction,
+          rect.y + grid,
+          rect.y + rect.height - grid,
+          grid,
+        );
+        if (split <= rect.y + EPSILON || split >= rect.y + rect.height - EPSILON) {
+          continue;
+        }
+        left = { ...rect, height: split - rect.y };
+        right = { ...rect, y: split, height: rect.y + rect.height - split };
+      }
+      candidates.push({
+        left,
+        right,
+        splitIndex,
+        cost:
+          regionCost(left) +
+          regionCost(right) +
+          Math.abs(fraction - 0.5) * 0.0001,
+      });
+    }
+  }
+
+  let best: SplitCandidate | null = null;
+  if (candidates.length > 0) {
+    if (jitter > 0 && candidates.length > 1 && random() < jitter) {
+      candidates.sort((a, b) => a.cost - b.cost);
+      best = candidates[Math.floor(random() * Math.min(4, candidates.length))];
+    } else {
+      for (const candidate of candidates) {
+        if (!best || candidate.cost < best.cost) best = candidate;
+      }
+    }
+  }
+
+  if (!best) {
+    const splitIndex = start + Math.max(1, Math.floor((end - start) / 2));
+    const fraction = (prefix[splitIndex] - prefix[start]) / groupArea;
+    if (rect.width >= rect.height && rect.width >= grid * 2) {
+      const split = clampSplit(
+        rect.x + rect.width * fraction,
+        rect.x + grid,
+        rect.x + rect.width - grid,
+        grid,
+      );
+      best = {
+        left: { ...rect, width: split - rect.x },
+        right: { ...rect, x: split, width: rect.x + rect.width - split },
+        splitIndex,
+        cost: 0,
+      };
+    } else {
+      const split = clampSplit(
+        rect.y + rect.height * fraction,
+        rect.y + grid,
+        rect.y + rect.height - grid,
+        grid,
+      );
+      best = {
+        left: { ...rect, height: split - rect.y },
+        right: { ...rect, y: split, height: rect.y + rect.height - split },
+        splitIndex,
+        cost: 0,
+      };
+    }
+  }
+
+  placeRange(
+    items,
+    prefix,
+    start,
+    best.splitIndex,
+    best.left,
+    grid,
+    out,
+    random,
+    jitter,
+  );
+  placeRange(
+    items,
+    prefix,
+    best.splitIndex,
+    end,
+    best.right,
+    grid,
+    out,
+    random,
+    jitter,
+  );
+}
+
+function layoutOrder(
+  order: SemanticRoom[],
+  envelope: Envelope,
+  grid: number,
+  random: () => number,
+  jitter: number,
+): Map<string, LayoutRect> {
+  const items: LayoutItem[] = order.map((room) => ({
+    room,
+    area: layoutAreaOf(room),
+  }));
+  const targetArea = items.reduce((sum, item) => sum + item.area, 0);
+  const scale = (envelope.width * envelope.height) / Math.max(targetArea, EPSILON);
+  for (const item of items) item.area *= scale;
+
+  const prefix = [0];
+  for (let index = 0; index < items.length; index += 1) {
+    prefix.push(prefix[index] + items[index].area);
+  }
+
+  const rects = new Map<string, LayoutRect>();
+  placeRange(
+    items,
+    prefix,
+    0,
+    items.length,
+    { x: 0, y: 0, width: envelope.width, height: envelope.height },
+    grid,
+    rects,
+    random,
+    jitter,
+  );
+  return rects;
+}
+
+function linkWeight(
+  link: SemanticLink,
+  byId: Map<string, SemanticRoom>,
+  entranceRoom: string,
+) {
+  const from = byId.get(link.from);
+  const to = byId.get(link.to);
+  if (!from || !to) return 1;
+  let weight = 1;
+  if (link.from === entranceRoom || link.to === entranceRoom) weight += 10;
+  if (
+    (from && from.id !== entranceRoom && isCirculationRoom(from)) ||
+    (to && to.id !== entranceRoom && isCirculationRoom(to))
+  ) {
+    weight += 2;
+  }
+  return weight;
+}
+
+function scoreLayout(
+  plan: SemanticFloorPlan,
+  rects: Map<string, LayoutRect>,
+  envelope: Envelope,
+) {
+  let satisfiedLinks = 0;
+  let satisfiedWeight = 0;
+  let score = 0;
+  const byId = new Map(plan.rooms.map((room) => [room.id, room]));
+
+  for (const link of plan.links) {
+    const from = rects.get(link.from);
+    const to = rects.get(link.to);
+    const overlap = from && to ? sharedEdgeLength(from, to) : 0;
+    if (overlap >= MIN_SHARED_WALL_M - EPSILON) {
+      satisfiedLinks += 1;
+      satisfiedWeight += linkWeight(link, byId, plan.entrance_room);
+      score += LINK_BONUS + Math.min(overlap, 3) * 50_000;
+    } else {
+      score -= MISSING_LINK_PENALTY;
+    }
+  }
+
+  let minCompliant = true;
+  let windowCompliant = true;
+  let aspectCompliant = true;
+  for (const room of plan.rooms) {
+    const rect = rects.get(room.id);
+    if (!rect) {
+      minCompliant = false;
+      windowCompliant = false;
+      aspectCompliant = false;
+      score -= LINK_BONUS;
+      continue;
+    }
+    const short = Math.max(EPSILON, Math.min(rect.width, rect.height));
+    const ratio = Math.max(rect.width, rect.height) / short;
+    const circulation = isCirculationRoom(room);
+    const maxRatio = circulation ? 6 : 2.5;
+    const targetRatio = circulation ? 2.2 : 1.2;
+    const minimumDimension = circulation ? 1.1 : MIN_ROOM_DIMENSION_M;
+
+    if (ratio > maxRatio) {
+      score -= (ratio - maxRatio) ** 2 * ASPECT_HARD_PENALTY;
+    }
+    score -= (ratio - targetRatio) ** 2 * 500;
+    if (short < minimumDimension - EPSILON) {
+      score -= (minimumDimension - short) ** 2 * MIN_DIMENSION_PENALTY;
+    }
+    if (short < MIN_ROOM_DIMENSION_M - EPSILON) {
+      minCompliant = false;
+    }
+    if (ratio > 2 + EPSILON) {
+      aspectCompliant = false;
+    }
+
+    const solvedArea = rect.width * rect.height;
+    const areaError =
+      Math.abs(solvedArea - room.area_m2) /
+      Math.max(room.area_m2, EPSILON);
+    score -= areaError * AREA_ERROR_WEIGHT;
+
+    if (room.windows > 0 && !touchesEnvelope(rect, envelope)) {
+      windowCompliant = false;
+      score -= WINDOW_REQUEST_PENALTY;
+    }
+    if (room.windows > 0) {
+      const available = exteriorWindowLength(rect, envelope);
+      if (available < MIN_OPENING_WIDTH_M + OPENING_END_CLEARANCE_M * 2) {
+        windowCompliant = false;
+      }
+      const required =
+        room.windows * (WINDOW_WIDTH_M + OPENING_SPACING_M);
+      if (available < required) {
+        score -= (required - available) * WINDOW_CAPACITY_PENALTY;
+      }
+    }
+  }
+
+  const entrance = rects.get(plan.entrance_room);
+  if (!entrance) {
+    score -= ENTRANCE_FRONT_PENALTY;
+  } else {
+    if (entrance.y > EPSILON) score -= ENTRANCE_FRONT_PENALTY;
+    if (entrance.x > EPSILON) score -= ENTRANCE_SIDE_PENALTY;
+  }
+
+  return {
+    satisfiedLinks,
+    satisfiedWeight,
+    minCompliant,
+    windowCompliant,
+    aspectCompliant,
+    score,
+  };
+}
+
+function evaluateLayout(
+  plan: SemanticFloorPlan,
+  order: SemanticRoom[],
+  aspect: number,
+  grid: number,
+  random: () => number,
+  jitter = 0,
+): ScoredLayout {
+  const envelope = makeEnvelope(plan, aspect, grid);
+  const rects = layoutOrder(order, envelope, grid, random, jitter);
+  return {
+    order,
+    envelope,
+    rects,
+    ...scoreLayout(plan, rects, envelope),
+  };
+}
+
+function isBetterLayout(a: ScoredLayout, b: ScoredLayout) {
+  if (a.minCompliant !== b.minCompliant) return a.minCompliant;
+  if (a.windowCompliant !== b.windowCompliant) return a.windowCompliant;
+  if (a.satisfiedWeight !== b.satisfiedWeight) {
+    return a.satisfiedWeight > b.satisfiedWeight;
+  }
+  if (a.satisfiedLinks !== b.satisfiedLinks) {
+    return a.satisfiedLinks > b.satisfiedLinks;
+  }
+  if (a.aspectCompliant !== b.aspectCompliant) return a.aspectCompliant;
+  return a.score > b.score;
+}
+
+function findBestLayout(plan: SemanticFloorPlan): ScoredLayout {
+  const grid = plan.grid_unit_m;
+  const seedOrders = buildSeedOrders(plan);
+  const random = createRandom(hashString(JSON.stringify(plan)));
+  const orders = [
+    ...seedOrders,
+    ...buildRandomOrders(
+      plan,
+      plan.rooms.length <= 12 ? 160 : 48,
+      random,
+      seedOrders[0] ?? plan.rooms,
+    ),
+  ];
+  const aspects = [
+    0.6, 0.7, 0.8, 0.85, 0.9, 1, 1.1, 1.15, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7,
+  ];
+
+  let best: ScoredLayout | null = null;
+  for (const order of orders) {
+    for (const aspect of aspects) {
+      const candidate = evaluateLayout(plan, order, aspect, grid, random);
+      if (!best || isBetterLayout(candidate, best)) best = candidate;
+      for (let variant = 0; variant < 3; variant += 1) {
+        const jittered = evaluateLayout(
+          plan,
+          order,
+          aspect,
+          grid,
+          random,
+          0.4,
+        );
+        if (isBetterLayout(jittered, best)) best = jittered;
+      }
+    }
+  }
+  if (!best) {
+    best = evaluateLayout(plan, plan.rooms, 1, grid, random);
+  }
+
+  const localAspects = [...new Set([best.envelope.width / best.envelope.height, 1, 0.85, 1.15])];
+  const tried = new Set<string>();
+  for (let pass = 0; pass < 3; pass += 1) {
+    let improved = false;
+    const order = best.order;
+    for (let first = 1; first < order.length - 1; first += 1) {
+      for (let second = first + 1; second < order.length; second += 1) {
+        const swapped = [...order];
+        [swapped[first], swapped[second]] = [swapped[second], swapped[first]];
+        const key = swapped.map((room) => room.id).join("\u0000");
+        if (tried.has(key)) continue;
+        tried.add(key);
+        for (const aspect of localAspects) {
+          const candidate = evaluateLayout(
+            plan,
+            swapped,
+            aspect,
+            grid,
+            random,
+          );
+          if (isBetterLayout(candidate, best)) {
+            best = candidate;
+            improved = true;
+          }
         }
       }
     }
-
-    const height = row.heightSteps * grid;
-    const placedRooms: PlacedRowRoom[] = [];
-    let xSteps = offsetSteps;
-    for (const item of row.rooms) {
-      const width = item.widthSteps * grid;
-      rooms.push({
-        id: item.room.id,
-        type: item.room.type,
-        zone: item.room.zone,
-        area_m2: item.room.area_m2,
-        x_m: roundGridSteps(xSteps * grid),
-        y_m: roundGridSteps(ySteps * grid),
-        width_m: roundGridSteps(width),
-        height_m: roundGridSteps(height),
-      });
-      placedRooms.push({
-        room: item.room,
-        xSteps,
-        widthSteps: item.widthSteps,
-      });
-      xSteps += item.widthSteps;
-    }
-    placedRows.push({
-      ySteps,
-      heightSteps: row.heightSteps,
-      rooms: placedRooms,
-    });
-    ySteps += row.heightSteps;
+    if (!improved) break;
   }
 
-  return rooms;
+  return best;
 }
 
-function roomEdges(rooms: SolvedRoom[]): RoomEdge[] {
+function buildRoomRectangles(plan: SemanticFloorPlan): SolvedRoom[] {
+  const layout = findBestLayout(plan);
+  return plan.rooms.map((room) => {
+    const rect = layout.rects.get(room.id)!;
+    return {
+      id: room.id,
+      type: room.type,
+      zone: room.zone,
+      area_m2: room.area_m2,
+      x_m: roundMeters(rect.x),
+      y_m: roundMeters(rect.y),
+      width_m: roundMeters(rect.width),
+      height_m: roundMeters(rect.height),
+    };
+  });
+}
+
+function roomEdges(rooms: SolvedRoom[]) {
   return rooms.flatMap((room) => [
     {
       roomId: room.id,
@@ -441,7 +788,7 @@ function roomEdges(rooms: SolvedRoom[]): RoomEdge[] {
 }
 
 function buildWallSegments(rooms: SolvedRoom[]) {
-  const groups = new Map<string, RoomEdge[]>();
+  const groups = new Map<string, ReturnType<typeof roomEdges>>();
   for (const edge of roomEdges(rooms)) {
     const key = `${edge.axis}:${edge.coordinate.toFixed(6)}`;
     const group = groups.get(key) ?? [];
@@ -452,17 +799,22 @@ function buildWallSegments(rooms: SolvedRoom[]) {
   const segments: WallSegment[] = [];
   for (const edges of groups.values()) {
     const { axis, coordinate } = edges[0];
-    const breakpoints = [...new Set(edges.flatMap(({ start, end }) => [start, end]))]
-      .sort((a, b) => a - b);
+    const breakpoints = [
+      ...new Set(edges.flatMap(({ start, end }) => [start, end])),
+    ].sort((a, b) => a - b);
     for (let index = 0; index < breakpoints.length - 1; index += 1) {
       const start = breakpoints[index];
       const end = breakpoints[index + 1];
-      if (end - start < 1e-6) continue;
+      if (end - start < EPSILON) continue;
       const midpoint = (start + end) / 2;
       const roomIds = [
         ...new Set(
           edges
-            .filter((edge) => midpoint > edge.start - 1e-7 && midpoint < edge.end + 1e-7)
+            .filter(
+              (edge) =>
+                midpoint > edge.start - 1e-7 &&
+                midpoint < edge.end + 1e-7,
+            )
             .map((edge) => edge.roomId),
         ),
       ];
@@ -520,17 +872,13 @@ function toOpening(
   id: string,
   centerMeters = openingCenterMeters(segment),
 ): Opening {
-  const lengthFeet =
-    (segment.end - segment.start) * METERS_TO_FEET;
+  const lengthFeet = (segment.end - segment.start) * METERS_TO_FEET;
   const centerFeet = centerMeters * METERS_TO_FEET;
   return {
     id,
     wallId: segment.wall.id,
     type,
-    positionOnWall: Math.max(
-      0,
-      Math.min(1, centerFeet / lengthFeet),
-    ),
+    positionOnWall: Math.max(0, Math.min(1, centerFeet / lengthFeet)),
     width: meterToFeet(widthMeters),
   };
 }
@@ -547,7 +895,7 @@ function placeWidth(
     warnings.push(`${label} could not fit on its shared/exterior wall.`);
     return null;
   }
-  if (width < requestedWidth - 1e-6) {
+  if (width < requestedWidth - EPSILON) {
     warnings.push(
       `${label} was narrowed to ${width.toFixed(2)} m to fit the available wall.`,
     );
@@ -567,16 +915,191 @@ function openingOverlaps(
   return openings.some((opening) => {
     if (opening.wallId !== segment.wall.id) return false;
     const otherCenter = opening.positionOnWall * lengthFeet;
-    // The round-trip through positionOnWall introduces floating-point noise;
-    // subtract a tiny epsilon so openings placed at the exact minimum spacing
-    // are still accepted.
     return (
       Math.abs(otherCenter - centerFeet) <
       (opening.width + widthFeet) / 2 +
         OPENING_SPACING_M * METERS_TO_FEET -
-        1e-6
+        EPSILON
     );
   });
+}
+
+function doorReachableRooms(
+  entranceRoomId: string,
+  segments: WallSegment[],
+  openings: Opening[],
+) {
+  const roomsByWall = new Map(
+    segments.map((segment) => [segment.wall.id, segment.roomIds]),
+  );
+  const graph = new Map<string, Set<string>>();
+  for (const segment of segments) {
+    for (const roomId of segment.roomIds) {
+      if (!graph.has(roomId)) graph.set(roomId, new Set());
+    }
+  }
+  for (const opening of openings) {
+    if (opening.type !== "door") continue;
+    const roomIds = roomsByWall.get(opening.wallId) ?? [];
+    if (roomIds.length !== 2) continue;
+    graph.get(roomIds[0])?.add(roomIds[1]);
+    graph.get(roomIds[1])?.add(roomIds[0]);
+  }
+
+  const reachable = new Set([entranceRoomId]);
+  const queue = [entranceRoomId];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    for (const neighbour of graph.get(id) ?? []) {
+      if (reachable.has(neighbour)) continue;
+      reachable.add(neighbour);
+      queue.push(neighbour);
+    }
+  }
+  return reachable;
+}
+
+/**
+ * A compact tiling can still leave a room without a door when the requested
+ * link graph cannot be realized. Rather than shipping a sealed room, connect it
+ * to an adjacent reachable room and record a warning.
+ */
+function ensureReachability(
+  plan: SemanticFloorPlan,
+  segments: WallSegment[],
+  openings: Opening[],
+  warnings: string[],
+) {
+  const roomById = new Map(plan.rooms.map((room) => [room.id, room]));
+  const failed = new Set<string>();
+
+  for (let guard = 0; guard <= plan.rooms.length * 2; guard += 1) {
+    const reachable = doorReachableRooms(
+      plan.entrance_room,
+      segments,
+      openings,
+    );
+    const missingRooms = plan.rooms.filter(
+      (room) => !reachable.has(room.id) && !failed.has(room.id),
+    );
+    if (missingRooms.length === 0) return;
+
+    let progressed = false;
+    for (const missing of missingRooms) {
+      const candidates = segments
+        .filter(
+          (segment) =>
+            segment.roomIds.includes(missing.id) &&
+            segment.roomIds.some((roomId) => reachable.has(roomId)) &&
+            segment.end - segment.start >= MIN_SHARED_WALL_M,
+        )
+        .sort((a, b) => {
+          const otherA = a.roomIds.find((id) => id !== missing.id) ?? "";
+          const otherB = b.roomIds.find((id) => id !== missing.id) ?? "";
+          const circulationA = isCirculationRoom(roomById.get(otherA)!);
+          const circulationB = isCirculationRoom(roomById.get(otherB)!);
+          return (
+            Number(circulationB) - Number(circulationA) ||
+            b.end - b.start - (a.end - a.start) ||
+            compareStrings(otherA, otherB)
+          );
+        });
+
+      let placed = false;
+      for (const segment of candidates) {
+        const otherId =
+          segment.roomIds.find((roomId) => roomId !== missing.id) ?? "";
+        const width = placeWidth(
+          DOOR_WIDTH_M,
+          segment,
+          [],
+          `The access door for "${missing.id}"`,
+        );
+        if (width === null) continue;
+        for (const fraction of [0.5, 0.3, 0.7]) {
+          const center = (segment.end - segment.start) * fraction;
+          if (openingOverlaps(openings, segment, center, width)) continue;
+          openings.push(
+            toOpening(
+              segment,
+              "door",
+              width,
+              `ai-access-${openings.length + 1}`,
+              center,
+            ),
+          );
+          warnings.push(
+            `Room "${missing.id}" had no usable door and was connected to "${otherId}".`,
+          );
+          placed = true;
+          progressed = true;
+          break;
+        }
+        if (placed) break;
+      }
+      if (placed) break;
+    }
+
+    if (!progressed) {
+      for (const missing of missingRooms) {
+        failed.add(missing.id);
+        warnings.push(
+          `Room "${missing.id}" could not be connected to the circulation.`,
+        );
+      }
+      return;
+    }
+  }
+}
+
+function windowBlockedIntervals(openings: Opening[], segment: WallSegment) {
+  const length = segment.end - segment.start;
+  return openings
+    .filter((opening) => opening.wallId === segment.wall.id)
+    .map((opening) => {
+      const center = opening.positionOnWall * length;
+      const half = (opening.width * FEET_TO_METERS) / 2;
+      return [
+        center - half - OPENING_SPACING_M,
+        center + half + OPENING_SPACING_M,
+      ] as [number, number];
+    });
+}
+
+function tryPlaceWindow(
+  openings: Opening[],
+  segment: WallSegment,
+  id: string,
+) {
+  const length = segment.end - segment.start;
+  const blocked = windowBlockedIntervals(openings, segment);
+  const widths = [WINDOW_WIDTH_M, 1.1, 1, 0.9, 0.8, 0.7, 0.6];
+  for (const requestedWidth of widths) {
+    const width = Math.min(
+      requestedWidth,
+      length - OPENING_END_CLEARANCE_M * 2,
+    );
+    if (width < MIN_OPENING_WIDTH_M - EPSILON) continue;
+    const maxStart = length - width - OPENING_END_CLEARANCE_M;
+    for (
+      let start = OPENING_END_CLEARANCE_M;
+      start <= maxStart + EPSILON;
+      start += 0.1
+    ) {
+      const end = start + width;
+      const overlaps = blocked.some(
+        ([blockedStart, blockedEnd]) =>
+          start < blockedEnd - EPSILON && end > blockedStart + EPSILON,
+      );
+      if (overlaps) continue;
+      const center = start + width / 2;
+      return {
+        opening: toOpening(segment, "window", width, id, center),
+        width,
+      };
+    }
+  }
+  return null;
 }
 
 function placeWindows(
@@ -591,88 +1114,42 @@ function placeWindows(
     const requested = plan.rooms.find((item) => item.id === room.id)!.windows;
     if (requested === 0) continue;
     const roomExterior = segments.filter(
-      (segment) => segment.roomIds.length === 1 && segment.roomIds[0] === room.id,
+      (segment) =>
+        segment.roomIds.length === 1 && segment.roomIds[0] === room.id,
     );
     const fitsWindow = (segment: WallSegment) =>
       segment.end - segment.start >=
       MIN_OPENING_WIDTH_M + OPENING_END_CLEARANCE_M * 2;
-    const preferred = roomExterior
-      .filter((segment) => segment.wall.id !== entranceWallId)
-      .filter(fitsWindow);
-    const candidates = (preferred.length > 0
-      ? preferred
-      : roomExterior.filter(fitsWindow))
-      .sort((a, b) => b.end - b.start - (a.end - a.start));
-    const allocations = new Map<string, number>();
+    const candidates = roomExterior
+      .filter(fitsWindow)
+      .sort(
+        (a, b) =>
+          Number(a.wall.id === entranceWallId) -
+            Number(b.wall.id === entranceWallId) ||
+          b.end - b.start - (a.end - a.start) ||
+          compareStrings(a.wall.id, b.wall.id),
+      );
 
+    let placed = 0;
     for (let index = 0; index < requested; index += 1) {
-      const candidate = candidates
-        .filter((segment) => {
-          const count = allocations.get(segment.wall.id) ?? 0;
-          const length = segment.end - segment.start;
-          const capacity = Math.max(
-            1,
-            Math.floor(
-              (length + OPENING_SPACING_M) /
-                (WINDOW_WIDTH_M + OPENING_SPACING_M),
-            ),
-          );
-          return count < capacity;
-        })
-        .sort((a, b) => {
-          const aCount = allocations.get(a.wall.id) ?? 0;
-          const bCount = allocations.get(b.wall.id) ?? 0;
-          return (
-            (b.end - b.start) / (bCount + 1) -
-              (a.end - a.start) / (aCount + 1) ||
-            compareStrings(a.wall.id, b.wall.id)
-          );
-        })[0];
-      if (!candidate) {
+      const id = `ai-window-${openings.filter((opening) => opening.type === "window").length + 1}`;
+      let result: ReturnType<typeof tryPlaceWindow> = null;
+      for (const segment of candidates) {
+        result = tryPlaceWindow(openings, segment, id);
+        if (result) break;
+      }
+      if (!result) {
         warnings.push(
-          `Room "${room.id}" requested ${requested} window(s), but only ${index} could fit on exterior walls.`,
+          `Room "${room.id}" requested ${requested} window(s), but only ${placed} could fit on exterior walls.`,
         );
         break;
       }
-      allocations.set(
-        candidate.wall.id,
-        (allocations.get(candidate.wall.id) ?? 0) + 1,
-      );
-    }
-
-    for (const segment of candidates) {
-      const count = allocations.get(segment.wall.id) ?? 0;
-      const length = segment.end - segment.start;
-      for (let index = 0; index < count; index += 1) {
-        const center = (length * (index + 1)) / (count + 1);
-        const maxEvenWidth =
-          count === 1
-            ? length - OPENING_END_CLEARANCE_M * 2
-            : Math.min(
-                (2 * length) / (count + 1) - OPENING_END_CLEARANCE_M * 2,
-                length / (count + 1) - OPENING_SPACING_M,
-              );
-        const width = Math.min(WINDOW_WIDTH_M, maxEvenWidth);
-        if (width < MIN_OPENING_WIDTH_M || openingOverlaps(openings, segment, center, width)) {
-          warnings.push(
-            `A requested window for room "${room.id}" could not fit without overlapping another opening.`,
-          );
-          continue;
-        }
-        openings.push(
-          toOpening(
-            segment,
-            "window",
-            width,
-            `ai-window-${openings.filter((opening) => opening.type === "window").length + 1}`,
-            center,
-          ),
+      openings.push(result.opening);
+      placed += 1;
+      if (result.width < WINDOW_WIDTH_M * 0.75) {
+        warnings.push(
+          `A window for room "${room.id}" was narrowed to ${result.width.toFixed(2)} m.`,
         );
-        if (width < WINDOW_WIDTH_M - 1e-6) {
-          warnings.push(
-            `A window for room "${room.id}" was narrowed to ${width.toFixed(2)} m.`,
-          );
-        }
       }
     }
   }
@@ -683,17 +1160,24 @@ export function solveFloorPlanLayout(plan: SemanticFloorPlan): SolvedFloorPlan {
   const segments = buildWallSegments(rooms);
   const warnings: string[] = [];
   const openings: Opening[] = [];
+
   const entranceCandidates = segments
     .filter(
       (segment) =>
         segment.roomIds.length === 1 &&
         segment.roomIds[0] === plan.entrance_room &&
-        segment.end - segment.start >= MIN_OPENING_WIDTH_M + OPENING_END_CLEARANCE_M * 2,
+        segment.end - segment.start >=
+          MIN_OPENING_WIDTH_M + OPENING_END_CLEARANCE_M * 2,
     )
     .sort((a, b) => {
-      const aAtFront = a.axis === "horizontal" && Math.abs(a.coordinate) < 1e-6;
-      const bAtFront = b.axis === "horizontal" && Math.abs(b.coordinate) < 1e-6;
-      return Number(bAtFront) - Number(aAtFront) || b.end - b.start - (a.end - a.start);
+      const aAtFront =
+        a.axis === "horizontal" && Math.abs(a.coordinate) < EPSILON;
+      const bAtFront =
+        b.axis === "horizontal" && Math.abs(b.coordinate) < EPSILON;
+      return (
+        Number(bAtFront) - Number(aAtFront) ||
+        b.end - b.start - (a.end - a.start)
+      );
     });
   const entranceSegment = entranceCandidates[0];
   let entranceWallId = "";
@@ -732,14 +1216,19 @@ export function solveFloorPlanLayout(plan: SemanticFloorPlan): SolvedFloorPlan {
         warnings,
         `The ${link.connection} opening between "${link.from}" and "${link.to}"`,
       ) ?? MIN_OPENING_WIDTH_M;
-    if (openingOverlaps(openings, candidate, openingCenterMeters(candidate), width)) {
+    if (
+      openingOverlaps(
+        openings,
+        candidate,
+        openingCenterMeters(candidate),
+        width,
+      )
+    ) {
       warnings.push(
         `The opening between "${link.from}" and "${link.to}" was omitted because it overlaps another opening.`,
       );
       continue;
     }
-    // The current scene model supports door and window openings; open/arch
-    // connections use a wider door-type wall cutout for renderer compatibility.
     openings.push(
       toOpening(
         candidate,
@@ -750,7 +1239,9 @@ export function solveFloorPlanLayout(plan: SemanticFloorPlan): SolvedFloorPlan {
     );
   }
 
+  ensureReachability(plan, segments, openings, warnings);
   placeWindows(plan, rooms, segments, entranceWallId, openings, warnings);
+
   for (const warning of warnings) {
     console.warn(`[Floor plan] ${warning}`);
   }

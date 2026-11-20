@@ -1,0 +1,361 @@
+
+[pass-1-room-program: attempt 1/5]
+{
+  "grid_unit_m
+[pass-1-room-program: attempt 2/5]
+{
+  "grid_unit_m": 0.5,
+  "entrance_room": "foyer_1",
+  "rooms": [
+    {
+      "id": "foyer_1",
+      "type": "hallway",
+      "area_m2": 6.0,
+      "zone": "front"
+    },
+    {
+      "id": "living_1",
+      "type": "living_room",
+      "area_m2": 25.0,
+      "zone": "front"
+    },
+    {
+      "id": "dining_1",
+      "type": "dining_room",
+      "area_m2": 12.0,
+      "zone": "front"
+    },
+    {
+      "id": "kitchen_1",
+      "type": "kitchen",
+      "area_m2": 10.0,
+      "zone": "service"
+    },
+    {
+      "id": "hall_1",
+      "type": "hallway",
+      "area_m2": 8.0,
+      "zone": "core"
+    },
+    {
+      "id": "bed_1",
+      "type": "bedroom",
+      "area_m2": 16.0,
+      "zone": "private"
+    },
+    {
+      "id": "bed_2",
+      "type": "bedroom",
+      "area_m2": 12.0,
+      "zone": "private"
+    },
+    {
+      "id": "bed_3",
+      "type": "bedroom",
+      "area_m2": 11.0,
+      "zone": "private"
+    },
+    {
+      "id": "bath_1",
+      "type": "bathroom",
+      "area_m2": 6.0,
+      "zone": "service"
+    },
+    {
+      "id": "bath_2",
+      "type": "bathroom",
+      "area_m2": 4.0,
+      "zone": "service"
+    },
+    {
+      "id": "storage_1",
+      "type": "storage",
+      "area_m2": 3.0,
+      "zone": "service"
+    }
+  ]
+}
+[Room program validated.]
+
+[pass-2-circulation: attempt 1/5]
+{
+  "links": [
+    {
+      "source": "foyer_1",
+      "target": "living_1",
+      "connection": "open"
+    },
+    {
+      "source": "foyer_1",
+      "target": "hall_1",
+      "connection": "door"
+    },
+    {
+      "source": "living_1",
+      "target": "dining_1",
+      "connection": "arch"
+    },
+    {
+      "source": "dining_1",
+      "target": "kitchen_1",
+      "connection": "door"
+    },
+    {
+      "source": "kitchen_1",
+      "target": "storage_1",
+      "connection": "door"
+    },
+    {
+      "source": "
+[pass-2-circulation: attempt 2/5]
+{
+  "links": [
+    {
+      "source": "foyer_1",
+      "target": "living_1",
+      "type": "door"
+    },
+    {
+      "source": "foyer_1",
+      "target": "hall_1",
+      "type": "door"
+    },
+    {
+      "source": "foyer_1",
+      "target": "storage_1",
+      "type": "door"
+    },
+    {
+      "source": "living_1",
+      "target": "dining_1",
+      "type": "open"
+    },
+    {
+      "source": "dining_1",
+      "target": "kitchen_1",
+      "type": "door"
+    },
+    {
+      "source": "hall_1",
+      "target": "bed_1",
+      "type": "door
+[pass-2-circulation: attempt 3/5]
+{
+  "links": [
+    {
+      "source": "foyer_1",
+      "target": "living_1",
+      "type": "door"
+    },
+    {
+      "source": "foyer_1",
+      "target": "hall_1",
+      "type": "door"
+    },
+    {
+      "source": "living_1",
+      "target": "dining_1",
+      "type": "open"
+    },
+    {
+[pass-2-circulation: attempt 4/5]
+{
+  "links": [
+    {
+      "source": "foyer_1",
+      "target": "living_1",
+      "type": "door"
+    },
+    {
+      "source": "foyer_1",
+      "target": "hall_1",
+      "type": "door"
+    },
+    {
+      "source": "foyer_1",
+      "target": "storage_1",
+      "type": "door"
+    },
+    {
+      "source": "living_1",
+      "target": "dining_1",
+      "type": "arch"
+    },
+    {
+      "source": "dining_1",
+      "target": "kitchen_1",
+      "type": "door"
+    },
+    {
+      "source": "hall_1",
+      "target": "bed_1",
+      "type": "door"
+    },
+    {
+      "source": "hall_1",
+      "target": "bed_2",
+      "type": "door"
+    },
+    {
+      "source": "hall_1",
+      "target": "bed_3",
+      "type": "door"
+    },
+    {
+      "source": "hall_1",
+      "target": "bath_1",
+      "type": "door"
+    },
+    {
+      "source": "bed_1",
+      "target": "bath_2",
+      "type": "door"
+    }
+  ]
+}
+[pass-2-circulation: attempt 5/5]
+{
+  "links": [
+    {
+      "from": "foyer_1",
+      "to": "living_1",
+      "connection": "door"
+    },
+    {
+      "from": "foyer_1",
+      "to": "hall_1",
+      "connection": "door"
+    },
+    {
+      "from": "foyer_1",
+      "to": "storage_1",
+      "connection": "door"
+    },
+    {
+      "from": "living_1",
+      "to": "dining_1",
+      "connection": "arch"
+    },
+    {
+      "from": "dining_1",
+      "to": "kitchen_1",
+      "connection": "door"
+    },
+    {
+      "from": "hall_1",
+      "to": "bed_1",
+      "connection": "door"
+    },
+    {
+      "from": "hall_1",
+      "to": "bed_2",
+      "connection": "door"
+    },
+    {
+      "from": "hall_1",
+      "to": "bed_3",
+      "connection": "door"
+    },
+    {
+      "from": "hall_1",
+      "to": "bath_1",
+      "connection": "door"
+    },
+    {
+      "from": "bed_1",
+      "to": "bath_2",
+      "connection": "door"
+    }
+  ]
+}
+[Connected room graph validated.]
+
+[pass-3-windows: attempt 1/5]
+{
+  "windows": [
+    {
+      "room_id": "foyer_1",
+      "count": 1
+    },
+    {
+      "room_id": "living_1",
+      "count": 3
+    },
+    {
+      "room_id": "dining_1",
+      "count": 2
+    
+[pass-3-windows: attempt 2/5]
+{
+  "windows": [
+    {
+      "room_id": "foyer_1",
+      "count": 0
+    },
+    {
+      "room_id": "living_1",
+      "count": 2
+    },
+    {
+      "room_id": "dining_1",
+      "count": 1
+    },
+    {
+      "room_id": "kitchen_1",
+      "count": 1
+    },
+    {
+      "room_id": "hall_1",
+      "count": 0
+    },
+    {
+      "room_id": "bed_1",
+      "count": 1
+    },
+    {
+      "room_id": "bed_2",
+      "count": 1
+    },
+    {
+      "room_id": "bed_3",
+      "count": 1
+    },
+    {
+      "room_id": "bath_1",
+      "count": 0
+    },
+    {
+      "room_id": "bath_2",
+      "count": 0
+    },
+    {
+      "room_id": "storage_1",
+      "count": 0
+    }
+  ]
+}
+[Window assignments validated.]
+
+[Layout critique: repair 1/2]
+
+[layout-repair-1: attempt 1/5]
+{
+  "room_updates": [
+    {
+      "id": "bath_2",
+      "zone": "private",
+      "area_m2": null
+    }
+  ],
+  "link_updates": [],
+  "link_removals": [
+    {
+      "from": "foyer_1",
+      "to": "hall_1"
+    },
+    {
+      "from": "foyer_1",
+      "to": "storage_1"
+    }
+  ]
+}

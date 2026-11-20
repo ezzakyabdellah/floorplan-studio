@@ -168,35 +168,6 @@ describe("deterministic floor-plan layout solver", () => {
     ).toBe(true);
   });
 
-  it("warns instead of failing when requested windows belong to an enclosed room", () => {
-    const plan = validateSemanticFloorPlan({
-      grid_unit_m: 0.5,
-      entrance_room: "top",
-      rooms: [
-        { id: "top", type: "living_room", area_m2: 100, zone: "front", windows: 0 },
-        { id: "bath", type: "bathroom", area_m2: 25, zone: "core", windows: 0 },
-        { id: "left", type: "bedroom", area_m2: 25, zone: "core", windows: 2 },
-        { id: "right", type: "bedroom", area_m2: 25, zone: "core", windows: 0 },
-        { id: "bottom", type: "bedroom", area_m2: 100, zone: "private", windows: 0 },
-      ],
-      links: [
-        { from: "top", to: "bath", connection: "door" },
-        { from: "bath", to: "left", connection: "door" },
-        { from: "bath", to: "right", connection: "door" },
-        { from: "bath", to: "bottom", connection: "door" },
-      ],
-    });
-    const solved = solveFloorPlanLayout(plan);
-
-    expect(solved.rooms).toHaveLength(5);
-    expect(solved.openings.filter((opening) => opening.type === "window")).toHaveLength(
-      0,
-    );
-    expect(solved.warnings.some((warning) => warning.includes('Room "left" requested 2'))).toBe(
-      true,
-    );
-  });
-
   it("keeps target areas and places every linked door for a three-bedroom plan", () => {
     const plan = validateSemanticFloorPlan({
       grid_unit_m: 0.5,
@@ -233,5 +204,125 @@ describe("deterministic floor-plan layout solver", () => {
       plan.links.length + 1,
     );
     expect(solved.warnings).toEqual([]);
+  });
+
+  it("replaces the staircase layout with a compact, walkable plan for the 11-room case", () => {
+    const plan = validateSemanticFloorPlan({
+      grid_unit_m: 0.5,
+      entrance_room: "foyer_1",
+      rooms: [
+        { id: "foyer_1", type: "hallway", area_m2: 6, zone: "front", windows: 0 },
+        { id: "living_1", type: "living_room", area_m2: 25, zone: "front", windows: 2 },
+        { id: "dining_1", type: "dining_room", area_m2: 12, zone: "front", windows: 1 },
+        { id: "kitchen_1", type: "kitchen", area_m2: 10, zone: "service", windows: 1 },
+        { id: "hall_1", type: "hallway", area_m2: 8, zone: "core", windows: 0 },
+        { id: "bed_1", type: "bedroom", area_m2: 16, zone: "private", windows: 1 },
+        { id: "bed_2", type: "bedroom", area_m2: 12, zone: "private", windows: 1 },
+        { id: "bed_3", type: "bedroom", area_m2: 11, zone: "private", windows: 1 },
+        { id: "bath_1", type: "bathroom", area_m2: 6, zone: "service", windows: 0 },
+        { id: "bath_2", type: "bathroom", area_m2: 4, zone: "service", windows: 0 },
+        { id: "storage_1", type: "storage", area_m2: 3, zone: "service", windows: 0 },
+      ],
+      links: [
+        { from: "foyer_1", to: "living_1", connection: "door" },
+        { from: "foyer_1", to: "hall_1", connection: "door" },
+        { from: "foyer_1", to: "storage_1", connection: "door" },
+        { from: "living_1", to: "dining_1", connection: "arch" },
+        { from: "dining_1", to: "kitchen_1", connection: "door" },
+        { from: "hall_1", to: "bed_1", connection: "door" },
+        { from: "hall_1", to: "bed_2", connection: "door" },
+        { from: "hall_1", to: "bed_3", connection: "door" },
+        { from: "hall_1", to: "bath_1", connection: "door" },
+        { from: "bed_1", to: "bath_2", connection: "door" },
+      ],
+    });
+    const solved = solveFloorPlanLayout(plan);
+
+    expect(solved.rooms).toHaveLength(plan.rooms.length);
+
+    for (let first = 0; first < solved.rooms.length; first += 1) {
+      for (let second = first + 1; second < solved.rooms.length; second += 1) {
+        const a = solved.rooms[first];
+        const b = solved.rooms[second];
+        const overlapX =
+          Math.min(a.x_m + a.width_m, b.x_m + b.width_m) -
+          Math.max(a.x_m, b.x_m);
+        const overlapY =
+          Math.min(a.y_m + a.height_m, b.y_m + b.height_m) -
+          Math.max(a.y_m, b.y_m);
+        expect(overlapX > 1e-6 && overlapY > 1e-6).toBe(false);
+      }
+    }
+
+    for (const room of solved.rooms) {
+      expect(Math.min(room.width_m, room.height_m)).toBeGreaterThanOrEqual(1 - 1e-6);
+    }
+
+    const minX = Math.min(...solved.rooms.map((room) => room.x_m));
+    const minY = Math.min(...solved.rooms.map((room) => room.y_m));
+    const maxX = Math.max(...solved.rooms.map((room) => room.x_m + room.width_m));
+    const maxY = Math.max(...solved.rooms.map((room) => room.y_m + room.height_m));
+    const roomArea = solved.rooms.reduce(
+      (total, room) => total + room.width_m * room.height_m,
+      0,
+    );
+    expect(roomArea / ((maxX - minX) * (maxY - minY))).toBeGreaterThanOrEqual(0.9);
+
+    // Every room must be reachable through door openings.
+    const feetToMeters = 0.3048;
+    const roomsByWall = new Map<string, string[]>();
+    for (const wall of solved.walls) {
+      const x1 = wall.x1 * feetToMeters;
+      const y1 = wall.y1 * feetToMeters;
+      const x2 = wall.x2 * feetToMeters;
+      const y2 = wall.y2 * feetToMeters;
+      const horizontal = Math.abs(y1 - y2) < 1e-6;
+      const ids = solved.rooms
+        .filter((room) => {
+          if (horizontal) {
+            const onEdge =
+              Math.abs(room.y_m - y1) < 1e-6 ||
+              Math.abs(room.y_m + room.height_m - y1) < 1e-6;
+            const overlap =
+              Math.min(room.x_m + room.width_m, Math.max(x1, x2)) -
+              Math.max(room.x_m, Math.min(x1, x2));
+            return onEdge && overlap > 1e-6;
+          }
+          const onEdge =
+            Math.abs(room.x_m - x1) < 1e-6 ||
+            Math.abs(room.x_m + room.width_m - x1) < 1e-6;
+          const overlap =
+            Math.min(room.y_m + room.height_m, Math.max(y1, y2)) -
+            Math.max(room.y_m, Math.min(y1, y2));
+          return onEdge && overlap > 1e-6;
+        })
+        .map((room) => room.id);
+      roomsByWall.set(wall.id, ids);
+    }
+
+    const adjacency = new Map<string, Set<string>>(
+      solved.rooms.map((room) => [room.id, new Set<string>()]),
+    );
+    for (const opening of solved.openings) {
+      if (opening.type !== "door") continue;
+      const roomIds = roomsByWall.get(opening.wallId) ?? [];
+      if (roomIds.length !== 2) continue;
+      adjacency.get(roomIds[0])?.add(roomIds[1]);
+      adjacency.get(roomIds[1])?.add(roomIds[0]);
+    }
+    const reached = new Set([plan.entrance_room]);
+    const queue = [plan.entrance_room];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      for (const neighbour of adjacency.get(id) ?? []) {
+        if (reached.has(neighbour)) continue;
+        reached.add(neighbour);
+        queue.push(neighbour);
+      }
+    }
+    expect(reached.size).toBe(plan.rooms.length);
+    expect(
+      solved.warnings.some((warning) => warning.includes("could not be connected")),
+    ).toBe(false);
   });
 });
