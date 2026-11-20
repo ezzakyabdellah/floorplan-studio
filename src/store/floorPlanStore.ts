@@ -8,6 +8,7 @@ import {
   type FurnitureKind,
   type Opening,
   type OpeningType,
+  type SceneEnvironment,
   type SceneFile,
   type Wall,
 } from "../types/floorplan";
@@ -21,6 +22,28 @@ import { isFloorPlanUnit } from "../utils/floorPlanUnits";
 
 const FURNITURE_SCALE_STORAGE_KEY = "floorplan-studio:furniture-scale-factor";
 const DISPLAY_UNIT_STORAGE_KEY = "floorplan-studio:display-unit";
+const SHOW_FURNITURE_STORAGE_KEY = "floorplan-studio:show-furniture";
+const SCENE_ENVIRONMENT_STORAGE_KEY = "floorplan-studio:scene-environment";
+
+function readShowFurniture(): boolean {
+  try {
+    if (typeof localStorage === "undefined") return true;
+    return localStorage.getItem(SHOW_FURNITURE_STORAGE_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+function readSceneEnvironment(): SceneEnvironment {
+  try {
+    if (typeof localStorage === "undefined") return "sunny";
+    return localStorage.getItem(SCENE_ENVIRONMENT_STORAGE_KEY) === "night"
+      ? "night"
+      : "sunny";
+  } catch {
+    return "sunny";
+  }
+}
 
 function readDisplayUnit(): FloorPlanUnit {
   try {
@@ -117,6 +140,8 @@ type FloorPlanState = {
   unit: FloorPlanUnit;
   activeView: ActiveView;
   activeTool: ActiveTool;
+  showFurniture: boolean;
+  environment: SceneEnvironment;
   selectedWallId: string | null;
   selectedOpeningId: string | null;
   selectedFurnitureId: string | null;
@@ -127,6 +152,9 @@ type FloorPlanState = {
   revision: number;
   setActiveView: (view: ActiveView) => void;
   setActiveTool: (tool: ActiveTool) => void;
+  setShowFurniture: (show: boolean) => void;
+  toggleFurnitureVisibility: () => void;
+  setEnvironment: (environment: SceneEnvironment) => void;
   toggleCompliance: () => void;
   setComplianceOpen: (open: boolean) => void;
   toggleAi: () => void;
@@ -178,6 +206,8 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
   unit: readDisplayUnit(),
   activeView: "2d",
   activeTool: "select",
+  showFurniture: readShowFurniture(),
+  environment: readSceneEnvironment(),
   selectedWallId: null,
   selectedOpeningId: null,
   selectedFurnitureId: null,
@@ -189,6 +219,33 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
 
   setActiveView: (activeView) => set({ activeView }),
   setActiveTool: (activeTool) => set({ activeTool }),
+  setShowFurniture: (showFurniture) => {
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(SHOW_FURNITURE_STORAGE_KEY, String(showFurniture));
+      }
+    } catch {
+      // Keep the in-memory setting usable when browser storage is unavailable.
+    }
+    set((state) => ({
+      showFurniture,
+      selectedFurnitureId: showFurniture ? state.selectedFurnitureId : null,
+      isFurnitureDragging: showFurniture ? state.isFurnitureDragging : false,
+    }));
+  },
+  toggleFurnitureVisibility: () => {
+    get().setShowFurniture(!get().showFurniture);
+  },
+  setEnvironment: (environment) => {
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(SCENE_ENVIRONMENT_STORAGE_KEY, environment);
+      }
+    } catch {
+      // Keep the in-memory setting usable when browser storage is unavailable.
+    }
+    set({ environment });
+  },
   toggleCompliance: () =>
     set((state) => {
       const complianceOpen = !state.complianceOpen;

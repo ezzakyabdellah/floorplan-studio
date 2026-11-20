@@ -6,7 +6,7 @@ import {
   type DragEvent as ReactDragEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Maximize, ZoomIn, ZoomOut } from "lucide-react";
+import { Eye, EyeOff, Maximize, ZoomIn, ZoomOut } from "lucide-react";
 import { useFloorPlanStore } from "../../store/floorPlanStore";
 import {
   DEFAULTS,
@@ -91,6 +91,11 @@ export function Canvas2D() {
   const furniture = useFloorPlanStore((state) => state.furniture);
   const activeTool = useFloorPlanStore((state) => state.activeTool);
   const unit = useFloorPlanStore((state) => state.unit);
+  const showFurniture = useFloorPlanStore((state) => state.showFurniture);
+  const setShowFurniture = useFloorPlanStore((state) => state.setShowFurniture);
+  const toggleFurnitureVisibility = useFloorPlanStore(
+    (state) => state.toggleFurnitureVisibility,
+  );
   const selectedWallId = useFloorPlanStore((state) => state.selectedWallId);
   const selectedOpeningId = useFloorPlanStore(
     (state) => state.selectedOpeningId,
@@ -241,6 +246,7 @@ export function Canvas2D() {
 
   const hitTestFurniture = useCallback(
     (point: Vec2): Furniture | null => {
+      if (!showFurniture) return null;
       for (let index = furniture.length - 1; index >= 0; index -= 1) {
         const item = furniture[index];
         const dx = point.x - item.x;
@@ -258,7 +264,7 @@ export function Canvas2D() {
       }
       return null;
     },
-    [furniture],
+    [furniture, showFurniture],
   );
 
   const nearestWall = useCallback(
@@ -466,48 +472,50 @@ export function Canvas2D() {
       ctx.stroke();
     }
 
-    for (const item of furniture) {
-      const center = toScreen({ x: item.x, y: item.y });
-      const width = Math.max(3, item.width * scale);
-      const depth = Math.max(3, item.depth * scale);
-      const selected = item.id === selectedFurnitureId;
-      const hovered = item.id === hoveredFurnitureId && !selected;
-      const catalogItem = furnitureCatalogItem(item.kind);
-      ctx.save();
-      ctx.translate(center.x, center.y);
-      ctx.rotate(item.rotation);
-      roundedRect(ctx, -width / 2, -depth / 2, width, depth, Math.min(6, width / 5, depth / 5));
-      ctx.fillStyle = selected
-        ? "rgba(56, 189, 248, 0.30)"
-        : hovered
-          ? "rgba(226, 232, 240, 0.28)"
-          : `${catalogItem.color}d9`;
-      ctx.fill();
-      ctx.strokeStyle = selected
-        ? "#38bdf8"
-        : hovered
-          ? "#e2e8f0"
-          : "rgba(15, 23, 32, 0.9)";
-      ctx.lineWidth = selected ? 2 : 1.25;
-      ctx.stroke();
-      if (width > 38 && depth > 18) {
-        ctx.fillStyle = "#101820";
-        ctx.font = `600 ${Math.max(8, Math.min(11, depth * 0.3))}px ui-sans-serif, system-ui, sans-serif`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(catalogItem.label, 0, 0, width - 8);
-      }
-      if (selected) {
-        ctx.fillStyle = "#38bdf8";
-        for (const x of [-width / 2, width / 2]) {
-          for (const y of [-depth / 2, depth / 2]) {
-            ctx.beginPath();
-            ctx.arc(x, y, 3.5, 0, Math.PI * 2);
-            ctx.fill();
+    if (showFurniture) {
+      for (const item of furniture) {
+        const center = toScreen({ x: item.x, y: item.y });
+        const width = Math.max(3, item.width * scale);
+        const depth = Math.max(3, item.depth * scale);
+        const selected = item.id === selectedFurnitureId;
+        const hovered = item.id === hoveredFurnitureId && !selected;
+        const catalogItem = furnitureCatalogItem(item.kind);
+        ctx.save();
+        ctx.translate(center.x, center.y);
+        ctx.rotate(item.rotation);
+        roundedRect(ctx, -width / 2, -depth / 2, width, depth, Math.min(6, width / 5, depth / 5));
+        ctx.fillStyle = selected
+          ? "rgba(56, 189, 248, 0.30)"
+          : hovered
+            ? "rgba(226, 232, 240, 0.28)"
+            : `${catalogItem.color}d9`;
+        ctx.fill();
+        ctx.strokeStyle = selected
+          ? "#38bdf8"
+          : hovered
+            ? "#e2e8f0"
+            : "rgba(15, 23, 32, 0.9)";
+        ctx.lineWidth = selected ? 2 : 1.25;
+        ctx.stroke();
+        if (width > 38 && depth > 18) {
+          ctx.fillStyle = "#101820";
+          ctx.font = `600 ${Math.max(8, Math.min(11, depth * 0.3))}px ui-sans-serif, system-ui, sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(catalogItem.label, 0, 0, width - 8);
+        }
+        if (selected) {
+          ctx.fillStyle = "#38bdf8";
+          for (const x of [-width / 2, width / 2]) {
+            for (const y of [-depth / 2, depth / 2]) {
+              ctx.beginPath();
+              ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+              ctx.fill();
+            }
           }
         }
+        ctx.restore();
       }
-      ctx.restore();
     }
 
     const drawPill = (
@@ -807,6 +815,7 @@ export function Canvas2D() {
     selectedOpeningId,
     selectedFurnitureId,
     selectedWallId,
+    showFurniture,
     size.height,
     size.width,
     unit,
@@ -989,6 +998,7 @@ export function Canvas2D() {
     event.preventDefault();
     const point = screenToWorld(event.clientX, event.clientY);
     if (!point) return;
+    setShowFurniture(true);
     addFurniture(kind, point.x, point.y);
     setActiveTool("select");
     setCursor(point);
@@ -1077,6 +1087,20 @@ export function Canvas2D() {
             aria-label="Fit plan to view"
           >
             <Maximize className="h-3.5 w-3.5" />
+          </button>
+          <div className="mx-0.5 h-4 w-px bg-line" />
+          <button
+            type="button"
+            onClick={toggleFurnitureVisibility}
+            className={cn(
+              "rounded-md p-1.5 transition hover:bg-white/5",
+              showFurniture ? "text-slate-400 hover:text-slate-100" : "text-amber-200",
+            )}
+            aria-pressed={showFurniture}
+            aria-label={showFurniture ? "Hide furniture" : "Show furniture"}
+            title={showFurniture ? "Hide furniture" : "Show furniture"}
+          >
+            {showFurniture ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
           </button>
         </div>
 

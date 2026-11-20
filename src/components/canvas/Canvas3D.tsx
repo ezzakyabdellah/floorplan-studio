@@ -2,14 +2,38 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { Canvas, useThree } from "@react-three/fiber";
 import { ContactShadows, Grid, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
-import { Box, Loader2, Move3D, Sparkles, Sun, Trash2 } from "lucide-react";
+import { Box, Eye, EyeOff, Loader2, Moon, Move3D, Sparkles, Sun, Trash2 } from "lucide-react";
 import { ExtrudedWall } from "./ExtrudedWall";
 import { FurnitureModel } from "./FurnitureModel";
 import { useFloorPlanStore } from "../../store/floorPlanStore";
 import { getSceneBounds, type SceneBounds } from "../../utils/geometry";
 import { generateFurnitureLayoutWithAI } from "../../services/furnitureAiService";
 import { FURNITURE_CATALOG } from "../../data/furnitureCatalog";
-import type { FurnitureKind } from "../../types/floorplan";
+import { cn } from "../../utils/cn";
+import type { FurnitureKind, SceneEnvironment } from "../../types/floorplan";
+
+const SCENE_PALETTES = {
+  sunny: {
+    sky: "#dce8ef",
+    fog: "#dce8ef",
+    floorBase: "#c9beac",
+    floorTop: "#e5ddcf",
+    gridCell: "#a99f90",
+    gridSection: "#8c806e",
+    shadow: "#665748",
+    shadowOpacity: 0.24,
+  },
+  night: {
+    sky: "#070b14",
+    fog: "#070b14",
+    floorBase: "#222a38",
+    floorTop: "#2e394b",
+    gridCell: "#2c3a4f",
+    gridSection: "#1a2434",
+    shadow: "#000000",
+    shadowOpacity: 0.42,
+  },
+} as const;
 
 type OrbitControlsLike = {
   target: THREE.Vector3;
@@ -45,7 +69,14 @@ function CameraRig() {
   return null;
 }
 
-function Floor({ bounds }: { bounds: SceneBounds }) {
+function Floor({
+  bounds,
+  environment,
+}: {
+  bounds: SceneBounds;
+  environment: SceneEnvironment;
+}) {
+  const palette = SCENE_PALETTES[environment];
   return (
     <group>
       <mesh
@@ -53,20 +84,26 @@ function Floor({ bounds }: { bounds: SceneBounds }) {
         receiveShadow
       >
         <boxGeometry args={[bounds.width + 3, 0.16, bounds.height + 3]} />
-        <meshStandardMaterial color="#c9beac" roughness={0.96} />
+        <meshStandardMaterial color={palette.floorBase} roughness={0.96} />
       </mesh>
       <mesh
         position={[bounds.centerX, -0.005, bounds.centerY]}
         receiveShadow
       >
         <boxGeometry args={[bounds.width, 0.01, bounds.height]} />
-        <meshStandardMaterial color="#e5ddcf" roughness={0.94} />
+        <meshStandardMaterial color={palette.floorTop} roughness={0.94} />
       </mesh>
     </group>
   );
 }
 
-function SunRig({ bounds }: { bounds: SceneBounds }) {
+function SunRig({
+  bounds,
+  environment,
+}: {
+  bounds: SceneBounds;
+  environment: SceneEnvironment;
+}) {
   const light = useRef<THREE.DirectionalLight>(null);
   const span = Math.max(bounds.width, bounds.height, 10);
 
@@ -76,6 +113,53 @@ function SunRig({ bounds }: { bounds: SceneBounds }) {
     directional.target.position.set(bounds.centerX, 0, bounds.centerY);
     directional.target.updateMatrixWorld();
   }, [bounds.centerX, bounds.centerY]);
+
+  if (environment === "night") {
+    return (
+      <>
+        <hemisphereLight args={["#22344f", "#04070d", 0.5]} />
+        <ambientLight intensity={0.2} color="#7f9bd6" />
+        <directionalLight
+          ref={light}
+          castShadow
+          position={[
+            bounds.centerX + span * 0.7,
+            span * 1.35,
+            bounds.centerY + span * 0.55,
+          ]}
+          intensity={0.85}
+          color="#9cb8ff"
+          shadow-mapSize-width={2048}
+          shadow-mapSize-height={2048}
+          shadow-camera-near={1}
+          shadow-camera-far={span * 3}
+          shadow-camera-left={-span * 0.8}
+          shadow-camera-right={span * 0.8}
+          shadow-camera-top={span * 0.8}
+          shadow-camera-bottom={-span * 0.8}
+          shadow-bias={-0.00035}
+        />
+        <pointLight
+          position={[bounds.centerX, Math.max(4, span * 0.28), bounds.centerY]}
+          intensity={Math.max(80, span * span * 0.8)}
+          distance={span * 2.4}
+          decay={2}
+          color="#ffd7a1"
+        />
+        <pointLight
+          position={[
+            bounds.centerX - span * 0.28,
+            Math.max(3, span * 0.18),
+            bounds.centerY + span * 0.24,
+          ]}
+          intensity={Math.max(30, span * span * 0.3)}
+          distance={span * 1.8}
+          decay={2}
+          color="#ffc17a"
+        />
+      </>
+    );
+  }
 
   return (
     <>
@@ -109,6 +193,7 @@ function SunRig({ bounds }: { bounds: SceneBounds }) {
 function FurnitureDropTarget() {
   const { camera, gl } = useThree();
   const addFurniture = useFloorPlanStore((state) => state.addFurniture);
+  const setShowFurniture = useFloorPlanStore((state) => state.setShowFurniture);
 
   useEffect(() => {
     const canvas = gl.domElement;
@@ -132,6 +217,7 @@ function FurnitureDropTarget() {
       raycaster.setFromCamera(pointer, camera);
       const point = raycaster.ray.intersectPlane(ground, new THREE.Vector3());
       if (!point) return;
+      setShowFurniture(true);
       addFurniture(kind as FurnitureKind, point.x, point.z);
     };
 
@@ -141,7 +227,7 @@ function FurnitureDropTarget() {
       canvas.removeEventListener("dragover", onDragOver);
       canvas.removeEventListener("drop", onDrop);
     };
-  }, [addFurniture, camera, gl]);
+  }, [addFurniture, camera, gl, setShowFurniture]);
 
   return null;
 }
@@ -150,27 +236,37 @@ function Scene() {
   const walls = useFloorPlanStore((state) => state.walls);
   const openings = useFloorPlanStore((state) => state.openings);
   const furniture = useFloorPlanStore((state) => state.furniture);
+  const showFurniture = useFloorPlanStore((state) => state.showFurniture);
+  const environment = useFloorPlanStore((state) => state.environment);
   const selectedWallId = useFloorPlanStore((state) => state.selectedWallId);
   const selectedFurnitureId = useFloorPlanStore((state) => state.selectedFurnitureId);
   const isFurnitureDragging = useFloorPlanStore((state) => state.isFurnitureDragging);
   const bounds = useMemo(() => getSceneBounds(walls), [walls]);
   const span = Math.max(bounds.width, bounds.height);
+  const palette = SCENE_PALETTES[environment];
 
   return (
     <>
-      <color attach="background" args={["#dce8ef"]} />
-      <fog attach="fog" args={["#dce8ef", span * 1.7, span * 3.8]} />
-      <SunRig bounds={bounds} />
+      <color attach="background" args={[palette.sky]} />
+      <fog
+        attach="fog"
+        args={[
+          palette.fog,
+          span * 1.7,
+          span * (environment === "night" ? 4.8 : 3.8),
+        ]}
+      />
+      <SunRig bounds={bounds} environment={environment} />
 
-      <Floor bounds={bounds} />
+      <Floor bounds={bounds} environment={environment} />
       <ContactShadows
         position={[bounds.centerX, 0.012, bounds.centerY]}
         scale={[bounds.width, bounds.height]}
-        opacity={0.24}
+        opacity={palette.shadowOpacity}
         blur={2.4}
         far={Math.max(8, span * 0.18)}
         resolution={512}
-        color="#665748"
+        color={palette.shadow}
       />
 
       <Grid
@@ -178,10 +274,10 @@ function Scene() {
         args={[Math.max(120, bounds.width + 20), Math.max(120, bounds.height + 20)]}
         cellSize={1}
         cellThickness={0.22}
-        cellColor="#a99f90"
+        cellColor={palette.gridCell}
         sectionSize={5}
         sectionThickness={0.5}
-        sectionColor="#8c806e"
+        sectionColor={palette.gridSection}
         fadeDistance={span * 1.6}
         fadeStrength={1.2}
         infiniteGrid
@@ -196,23 +292,25 @@ function Scene() {
           selected={wall.id === selectedWallId}
         />
       ))}
-      {furniture.map((item) => (
-        <Suspense
-          key={item.id}
-          fallback={
-            <FurnitureModel
-              furniture={item}
-              selected={item.id === selectedFurnitureId}
-              proceduralOnly
-            />
-          }
-        >
-          <FurnitureModel
-            furniture={item}
-            selected={item.id === selectedFurnitureId}
-          />
-        </Suspense>
-      ))}
+      {showFurniture
+        ? furniture.map((item) => (
+            <Suspense
+              key={item.id}
+              fallback={
+                <FurnitureModel
+                  furniture={item}
+                  selected={item.id === selectedFurnitureId}
+                  proceduralOnly
+                />
+              }
+            >
+              <FurnitureModel
+                furniture={item}
+                selected={item.id === selectedFurnitureId}
+              />
+            </Suspense>
+          ))
+        : null}
 
       <CameraRig />
       <FurnitureDropTarget />
@@ -235,6 +333,13 @@ export function Canvas3D() {
   const openings = useFloorPlanStore((state) => state.openings);
   const furniture = useFloorPlanStore((state) => state.furniture);
   const setFurniture = useFloorPlanStore((state) => state.setFurniture);
+  const showFurniture = useFloorPlanStore((state) => state.showFurniture);
+  const setShowFurniture = useFloorPlanStore((state) => state.setShowFurniture);
+  const toggleFurnitureVisibility = useFloorPlanStore(
+    (state) => state.toggleFurnitureVisibility,
+  );
+  const environment = useFloorPlanStore((state) => state.environment);
+  const setEnvironment = useFloorPlanStore((state) => state.setEnvironment);
   const clearSelection = useFloorPlanStore((state) => state.clearSelection);
   const [furnishing, setFurnishing] = useState(false);
   const [furnishNote, setFurnishNote] = useState("");
@@ -246,6 +351,7 @@ export function Canvas3D() {
     try {
       const result = await generateFurnitureLayoutWithAI(walls, openings);
       setFurniture(result.plan.furniture);
+      setShowFurniture(true);
       setFurnishNote(result.note);
     } catch (error) {
       setFurnishNote(
@@ -254,7 +360,7 @@ export function Canvas3D() {
     } finally {
       setFurnishing(false);
     }
-  }, [furnishing, openings, setFurniture, walls]);
+  }, [furnishing, openings, setFurniture, setShowFurniture, walls]);
   const roomCount = new Set(furniture.map((item) => item.roomLabel)).size;
 
   return (
@@ -280,13 +386,29 @@ export function Canvas3D() {
         <div className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-line glass p-1 shadow-lg shadow-black/30">
           {furniture.length > 0 ? (
             <span className="px-1.5 text-[10px] text-slate-500">
-              {furniture.length} pieces · {roomCount} rooms · {furniture[0].source === "gemini" ? "Gemini" : furniture[0].source === "local-llm" ? "Local AI" : "Geometry guess"}
+              {furniture.length} pieces ·{" "}
+              {showFurniture
+                ? `${roomCount} rooms · ${furniture[0].source === "gemini" ? "Gemini" : furniture[0].source === "local-llm" ? "Local AI" : "Geometry guess"}`
+                : "hidden"}
             </span>
           ) : (
             <span className="px-1.5 text-[10px] text-slate-500">
               Ask local AI to furnish the rooms
             </span>
           )}
+          <button
+            type="button"
+            onClick={toggleFurnitureVisibility}
+            className={cn(
+              "rounded-md p-1 transition hover:bg-white/10",
+              showFurniture ? "text-slate-400 hover:text-slate-100" : "text-amber-200",
+            )}
+            aria-pressed={showFurniture}
+            aria-label={showFurniture ? "Hide furniture" : "Show furniture"}
+            title={showFurniture ? "Hide furniture" : "Show furniture"}
+          >
+            {showFurniture ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+          </button>
           <button
             type="button"
             onClick={() => void furnish()}
@@ -309,10 +431,38 @@ export function Canvas3D() {
             </button>
           ) : null}
           <span className="mx-0.5 h-4 w-px bg-line" />
-          <span className="flex items-center gap-1 px-1.5 text-[10px] text-slate-500">
-            <Sun className="h-3.5 w-3.5 text-amber-300" />
-            Daylight
-          </span>
+          <div className="flex items-center gap-0.5 rounded-md border border-line/70 bg-black/20 p-0.5">
+            <button
+              type="button"
+              onClick={() => setEnvironment("sunny")}
+              aria-pressed={environment === "sunny"}
+              className={cn(
+                "flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium transition",
+                environment === "sunny"
+                  ? "border border-amber-300/30 bg-amber-200/15 text-amber-100"
+                  : "border border-transparent text-slate-500 hover:bg-white/5 hover:text-slate-200",
+              )}
+              title="Sunny daylight"
+            >
+              <Sun className="h-3 w-3" />
+              Sunny
+            </button>
+            <button
+              type="button"
+              onClick={() => setEnvironment("night")}
+              aria-pressed={environment === "night"}
+              className={cn(
+                "flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium transition",
+                environment === "night"
+                  ? "border border-indigo-300/30 bg-indigo-400/15 text-indigo-100"
+                  : "border border-transparent text-slate-500 hover:bg-white/5 hover:text-slate-200",
+              )}
+              title="Night lighting"
+            >
+              <Moon className="h-3 w-3" />
+              Night
+            </button>
+          </div>
         </div>
       </div>
 

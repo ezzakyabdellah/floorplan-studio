@@ -51,6 +51,31 @@ describe("furniture scale setting", () => {
   });
 });
 
+describe("scene view preferences", () => {
+  it("toggles furniture visibility and environment without touching geometry", () => {
+    const store = useFloorPlanStore.getState();
+    store.setShowFurniture(true);
+    store.setEnvironment("sunny");
+    const wallsBefore = useFloorPlanStore.getState().walls;
+
+    store.toggleFurnitureVisibility();
+    expect(useFloorPlanStore.getState().showFurniture).toBe(false);
+
+    const furnitureId = store.addFurniture("bed", 4, 4);
+    store.selectFurniture(furnitureId);
+    store.setShowFurniture(false);
+    expect(useFloorPlanStore.getState().selectedFurnitureId).toBeNull();
+
+    store.setEnvironment("night");
+    expect(useFloorPlanStore.getState().environment).toBe("night");
+    expect(useFloorPlanStore.getState().walls).toBe(wallsBefore);
+
+    store.setShowFurniture(true);
+    store.setEnvironment("sunny");
+    store.setFurniture([]);
+  });
+});
+
 describe("floor plan display units", () => {
   it("changes the display unit without modifying stored geometry", () => {
     const before = useFloorPlanStore.getState().walls;
