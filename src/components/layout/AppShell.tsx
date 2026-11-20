@@ -27,7 +27,7 @@ import { CompliancePanel } from "../ui/CompliancePanel";
 import { ImageImporter } from "../ui/ImageImporter";
 import { LocalAiAssistant } from "../ui/LocalAiAssistant";
 import { useFloorPlanStore } from "../../store/floorPlanStore";
-import type { ActiveTool } from "../../types/floorplan";
+import type { ActiveTool, Wall } from "../../types/floorplan";
 import { buildSceneFile, openSceneFile, saveSceneFile } from "../../utils/fileIO";
 import {
   displayLengthToFeet,
@@ -366,6 +366,21 @@ function Inspector() {
 
   if (selectedWall) {
     const length = wallLength(selectedWall);
+    const setWallPoint = (
+      patch: Partial<Pick<Wall, "x1" | "y1" | "x2" | "y2">>,
+    ) => {
+      const next = { ...selectedWall, ...patch };
+      if (wallLength(next) < 0.5) return;
+      updateWall(selectedWall.id, patch);
+    };
+    const setWallLength = (nextLength: number) => {
+      if (nextLength < 0.5 || length < 1e-6) return;
+      const ratio = nextLength / length;
+      updateWall(selectedWall.id, {
+        x2: selectedWall.x1 + (selectedWall.x2 - selectedWall.x1) * ratio,
+        y2: selectedWall.y1 + (selectedWall.y2 - selectedWall.y1) * ratio,
+      });
+    };
     return (
       <div className="space-y-3">
         <div className="flex items-center justify-between">
@@ -382,18 +397,40 @@ function Inspector() {
           </span>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 rounded-lg border border-line/70 bg-black/20 p-2.5 font-mono text-[10px] text-slate-400">
-          <span>
-            X1 {formatFeetNumber(selectedWall.x1, unit)}
-            <br />
-            Y1 {formatFeetNumber(selectedWall.y1, unit)}
-          </span>
-          <span>
-            X2 {formatFeetNumber(selectedWall.x2, unit)}
-            <br />
-            Y2 {formatFeetNumber(selectedWall.y2, unit)}
-          </span>
+        <LengthField
+          label="Length"
+          value={length}
+          min={0.5}
+          onChange={setWallLength}
+        />
+
+        <div className="grid grid-cols-2 gap-2">
+          <LengthField
+            label="X1"
+            value={selectedWall.x1}
+            onChange={(x1) => setWallPoint({ x1 })}
+          />
+          <LengthField
+            label="Y1"
+            value={selectedWall.y1}
+            onChange={(y1) => setWallPoint({ y1 })}
+          />
+          <LengthField
+            label="X2"
+            value={selectedWall.x2}
+            onChange={(x2) => setWallPoint({ x2 })}
+          />
+          <LengthField
+            label="Y2"
+            value={selectedWall.y2}
+            onChange={(y2) => setWallPoint({ y2 })}
+          />
         </div>
+
+        <p className="rounded-lg border border-line/60 bg-black/15 px-2.5 py-2 text-[9px] leading-relaxed text-slate-500">
+          On the plan, drag a round endpoint handle to resize or rotate the
+          wall, or the square midpoint handle to move it.
+        </p>
 
         <div className="grid grid-cols-2 gap-2">
           <LengthField

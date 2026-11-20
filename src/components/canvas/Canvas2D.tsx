@@ -57,6 +57,26 @@ type FurnitureDragState = {
   offsetY: number;
 };
 
+type WallHandleMode = "start" | "end" | "move";
+
+type WallDragState =
+  | {
+      mode: "start" | "end";
+      wallId: string;
+      pointerId: number;
+    }
+  | {
+      mode: "move";
+      wallId: string;
+      pointerId: number;
+      startX: number;
+      startY: number;
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+    };
+
 const MIN_SCALE = 2;
 const MAX_SCALE = 240;
 
@@ -107,6 +127,7 @@ export function Canvas2D() {
   const setActiveTool = useFloorPlanStore((state) => state.setActiveTool);
   const clearSelection = useFloorPlanStore((state) => state.clearSelection);
   const addWall = useFloorPlanStore((state) => state.addWall);
+  const updateWall = useFloorPlanStore((state) => state.updateWall);
   const addOpening = useFloorPlanStore((state) => state.addOpening);
   const addFurniture = useFloorPlanStore((state) => state.addFurniture);
   const updateFurniture = useFloorPlanStore((state) => state.updateFurniture);
@@ -120,6 +141,7 @@ export function Canvas2D() {
   const viewRef = useRef<View | null>(null);
   const panRef = useRef<PanState | null>(null);
   const furnitureDragRef = useRef<FurnitureDragState | null>(null);
+  const wallDragRef = useRef<WallDragState | null>(null);
   const spaceRef = useRef(false);
   const fittedRef = useRef(false);
   const lastRevisionRef = useRef(revision);
@@ -132,6 +154,10 @@ export function Canvas2D() {
   const [hoveredWallId, setHoveredWallId] = useState<string | null>(null);
   const [hoveredOpeningId, setHoveredOpeningId] = useState<string | null>(null);
   const [hoveredFurnitureId, setHoveredFurnitureId] = useState<string | null>(null);
+  const [hoveredWallHandle, setHoveredWallHandle] = useState<{
+    wallId: string;
+    mode: WallHandleMode;
+  } | null>(null);
 
   const applyView = useCallback((next: View) => {
     viewRef.current = next;
@@ -242,6 +268,30 @@ export function Canvas2D() {
       return best;
     },
     [walls],
+  );
+
+  const hitTestWallHandle = useCallback(
+    (point: Vec2): { wallId: string; mode: WallHandleMode } | null => {
+      if (!selectedWallId) return null;
+      const currentView = viewRef.current;
+      const wall = walls.find((item) => item.id === selectedWallId);
+      if (!currentView || !wall) return null;
+      const radius = 11 / currentView.scale;
+      const start = { x: wall.x1, y: wall.y1 };
+      const end = { x: wall.x2, y: wall.y2 };
+      if (distance(point, start) <= radius) {
+        return { wallId: wall.id, mode: "start" };
+      }
+      if (distance(point, end) <= radius) {
+        return { wallId: wall.id, mode: "end" };
+      }
+      const midpoint = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+      if (distance(point, midpoint) <= radius) {
+        return { wallId: wall.id, mode: "move" };
+      }
+      return null;
+    },
+    [selectedWallId, walls],
   );
 
   const hitTestFurniture = useCallback(
@@ -803,6 +853,59 @@ export function Canvas2D() {
       ctx.fillStyle = "rgba(226, 232, 240, 0.75)";
       ctx.fill();
     }
+
+    if (activeTool === "select" && selectedWall) {
+      const dragging = wallDragRef.current;
+      const drawHandle = (
+        screen: { x: number; y: number },
+        mode: WallHandleMode,
+        shape: "circle" | "square",
+      ) => {
+        const hovered =
+          hoveredWallHandle?.wallId === selectedWall.id &&
+          hoveredWallHandle.mode === mode;
+        const active =
+          dragging?.wallId === selectedWall.id && dragging.mode === mode;
+        const radius = active || hovered ? 7 : 5.5;
+        ctx.beginPath();
+        ctx.arc(screen.x, screen.y, radius + 2, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(11, 18, 32, 0.92)";
+        ctx.fill();
+        ctx.beginPath();
+        if (shape === "square") {
+          roundedRect(
+            ctx,
+            screen.x - radius,
+            screen.y - radius,
+            radius * 2,
+            radius * 2,
+            2,
+          );
+        } else {
+          ctx.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
+        }
+        ctx.fillStyle = active || hovered ? "#bae6fd" : "#38bdf8";
+        ctx.fill();
+        ctx.strokeStyle = "#0b1220";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      };
+
+      const startScreen = toScreen({ x: selectedWall.x1, y: selectedWall.y1 });
+      const endScreen = toScreen({ x: selectedWall.x2, y: selectedWall.y2 });
+      drawHandle(startScreen, "start", "circle");
+      drawHandle(endScreen, "end", "circle");
+      if (wallLength(selectedWall) >= 0.5) {
+        drawHandle(
+          {
+            x: (startScreen.x + endScreen.x) / 2,
+            y: (startScreen.y + endScreen.y) / 2,
+          },
+          "move",
+          "square",
+        );
+      }
+    }
   }, [
     activeTool,
     cursor,
@@ -810,6 +913,7 @@ export function Canvas2D() {
     furniture,
     hoveredFurnitureId,
     hoveredOpeningId,
+    hoveredWallHandle,
     hoveredWallId,
     openings,
     selectedOpeningId,
@@ -864,6 +968,34 @@ export function Canvas2D() {
     }
 
     if (activeTool === "select") {
+      const handle = hitTestWallHandle(point);
+      if (handle) {
+        const wall = walls.find((item) => item.id === handle.wallId);
+        if (wall) {
+          wallDragRef.current =
+            handle.mode === "move"
+              ? {
+                  mode: "move",
+                  wallId: wall.id,
+                  pointerId: event.pointerId,
+                  startX: point.x,
+                  startY: point.y,
+                  x1: wall.x1,
+                  y1: wall.y1,
+                  x2: wall.x2,
+                  y2: wall.y2,
+                }
+              : {
+                  mode: handle.mode,
+                  wallId: wall.id,
+                  pointerId: event.pointerId,
+                };
+          canvas.setPointerCapture(event.pointerId);
+          selectWall(wall.id);
+          setHoveredWallHandle(handle);
+          return;
+        }
+      }
       const opening = hitTestOpening(point);
       if (opening) {
         selectOpening(opening.id);
@@ -913,6 +1045,49 @@ export function Canvas2D() {
     const point = screenToWorld(event.clientX, event.clientY);
     if (!point) return;
 
+    const wallDrag = wallDragRef.current;
+    if (wallDrag?.pointerId === event.pointerId) {
+      const wall = useFloorPlanStore
+        .getState()
+        .walls.find((item) => item.id === wallDrag.wallId);
+      if (!wall) {
+        wallDragRef.current = null;
+        return;
+      }
+      if (wallDrag.mode === "move") {
+        const dx = Math.round((point.x - wallDrag.startX) / 0.5) * 0.5;
+        const dy = Math.round((point.y - wallDrag.startY) / 0.5) * 0.5;
+        updateWall(wall.id, {
+          x1: wallDrag.x1 + dx,
+          y1: wallDrag.y1 + dy,
+          x2: wallDrag.x2 + dx,
+          y2: wallDrag.y2 + dy,
+        });
+        setCursor(point);
+        setHoveredWallHandle({ wallId: wall.id, mode: "move" });
+        return;
+      }
+      const snapped = snapPoint(
+        point,
+        walls.filter((item) => item.id !== wall.id),
+      );
+      const other =
+        wallDrag.mode === "start"
+          ? { x: wall.x2, y: wall.y2 }
+          : { x: wall.x1, y: wall.y1 };
+      if (distance(snapped, other) >= 0.5) {
+        updateWall(
+          wall.id,
+          wallDrag.mode === "start"
+            ? { x1: snapped.x, y1: snapped.y }
+            : { x2: snapped.x, y2: snapped.y },
+        );
+      }
+      setCursor(snapped);
+      setHoveredWallHandle({ wallId: wall.id, mode: wallDrag.mode });
+      return;
+    }
+
     const furnitureDrag = furnitureDragRef.current;
     if (furnitureDrag?.pointerId === event.pointerId) {
       updateFurniture(furnitureDrag.id, {
@@ -932,6 +1107,14 @@ export function Canvas2D() {
     setCursor(point);
 
     if (activeTool === "select") {
+      const handle = hitTestWallHandle(point);
+      setHoveredWallHandle(handle);
+      if (handle) {
+        setHoveredFurnitureId(null);
+        setHoveredOpeningId(null);
+        setHoveredWallId(null);
+        return;
+      }
       const furnitureItem = hitTestFurniture(point);
       setHoveredFurnitureId(furnitureItem?.id ?? null);
       if (furnitureItem) {
@@ -941,6 +1124,7 @@ export function Canvas2D() {
       }
     } else {
       setHoveredFurnitureId(null);
+      setHoveredWallHandle(null);
     }
 
     if (activeTool === "door" || activeTool === "window") {
@@ -965,12 +1149,18 @@ export function Canvas2D() {
   const onPointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const pan = panRef.current;
     const furnitureDrag = furnitureDragRef.current;
+    const wallDrag = wallDragRef.current;
     if (pan?.pointerId === event.pointerId) panRef.current = null;
     if (furnitureDrag?.pointerId === event.pointerId) {
       furnitureDragRef.current = null;
     }
+    if (wallDrag?.pointerId === event.pointerId) {
+      wallDragRef.current = null;
+    }
     if (
-      (pan?.pointerId === event.pointerId || furnitureDrag?.pointerId === event.pointerId) &&
+      (pan?.pointerId === event.pointerId ||
+        furnitureDrag?.pointerId === event.pointerId ||
+        wallDrag?.pointerId === event.pointerId) &&
       event.currentTarget.hasPointerCapture(event.pointerId)
     ) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -978,11 +1168,12 @@ export function Canvas2D() {
   };
 
   const onPointerLeave = () => {
-    if (panRef.current || furnitureDragRef.current) return;
+    if (panRef.current || furnitureDragRef.current || wallDragRef.current) return;
     setCursor(null);
     setHoveredOpeningId(null);
     setHoveredWallId(null);
     setHoveredFurnitureId(null);
+    setHoveredWallHandle(null);
   };
 
   const onFurnitureDragOver = (event: ReactDragEvent<HTMLCanvasElement>) => {
@@ -1027,7 +1218,7 @@ export function Canvas2D() {
         ? `Click a wall to place a ${formatFeetLength(DEFAULTS.doorWidth, unit)} door`
         : activeTool === "window"
           ? `Click a wall to place a ${formatFeetLength(DEFAULTS.windowWidth, unit)} window`
-          : "Click a wall, opening or furniture · drag furniture to move · Delete to remove";
+          : "Click a wall, opening or furniture · drag wall handles to resize or move · Delete to remove";
 
   return (
     <div ref={containerRef} className="relative h-full w-full overflow-hidden">
@@ -1039,11 +1230,13 @@ export function Canvas2D() {
             ? "cursor-grab"
             : activeTool === "wall"
               ? "cursor-crosshair"
-          : activeTool === "select" && hoveredFurnitureId
-            ? "cursor-grab"
-            : activeTool === "door" || activeTool === "window"
-                ? "cursor-copy"
-                : "cursor-default",
+              : activeTool === "select" && hoveredWallHandle
+                ? "cursor-move"
+                : activeTool === "select" && hoveredFurnitureId
+                  ? "cursor-grab"
+                  : activeTool === "door" || activeTool === "window"
+                    ? "cursor-copy"
+                    : "cursor-default",
         )}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
