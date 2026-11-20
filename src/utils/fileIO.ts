@@ -153,9 +153,11 @@ export function parseSceneFile(raw: string): SceneFile {
         roomId: Math.max(0, Math.floor(roomId)),
         kind: item.kind as FurnitureKind,
         source:
-          item.source === "local-llm"
-            ? ("local-llm" as FurnitureSource)
-            : ("geometry" as FurnitureSource),
+          item.source === "gemini"
+            ? ("gemini" as FurnitureSource)
+            : item.source === "local-llm"
+              ? ("local-llm" as FurnitureSource)
+              : ("geometry" as FurnitureSource),
         roomLabel:
           typeof item.roomLabel === "string" ? item.roomLabel : "Room",
         x,

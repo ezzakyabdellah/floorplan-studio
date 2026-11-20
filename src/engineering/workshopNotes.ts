@@ -1,4 +1,4 @@
-import { generateLocalJson, type StreamOptions } from "../services/localAiService";
+import { generateAiJson, type StreamOptions } from "../services/aiProvider";
 import { logAiError } from "../services/aiLog";
 import { defaultWorkshopNotes, type WorkshopNotes } from "./shopSheet";
 import type { ProjectState } from "./types";
@@ -115,7 +115,7 @@ export async function generateWorkshopNotes(
     `Deterministic calculated metrics: ${JSON.stringify(project.calculatedMetrics)}`,
     `Offline note outline for context: ${JSON.stringify(fallback)}`,
   ].join("\n\n");
-  const raw = await generateLocalJson(
+  const raw = await generateAiJson(
     prompt,
     {
       ...options,

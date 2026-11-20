@@ -18,11 +18,20 @@ import { useFloorPlanStore } from "../../store/floorPlanStore";
 import {
   AI_TIMEOUT_RESPONSE_WINDOW_MS,
   DEFAULT_AI_MODELS,
-  analyzeComplianceWithLLM,
-  askPlanQuestion,
-  checkOllamaStatus,
-  type OllamaStatus,
 } from "../../services/localAiService";
+import {
+  checkAiStatus,
+  reloadAiProvider,
+  setAiProviderPreference,
+  useAiProvider,
+  type AiProvider,
+  type AiStatus,
+} from "../../services/aiProvider";
+import {
+  analyzeComplianceWithAI,
+  askPlanQuestionWithAI,
+} from "../../services/planAiService";
+import { DEFAULT_GEMINI_MODEL } from "../../services/geminiService";
 import { runComplianceChecks } from "../../utils/spatialRules";
 import { cn } from "../../utils/cn";
 import { exportAiLog, getAiLogLocation } from "../../services/aiLog";
@@ -83,7 +92,7 @@ function offlineAuditText(
 ) {
   const report = runComplianceChecks(walls, openings);
   const lines = [
-    "Offline deterministic audit. Ollama is not reachable, so the local rule engine produced this result.",
+    "Offline deterministic audit. No AI provider is reachable, so the local rule engine produced this result.",
     "",
     ...report.checks.map(
       (check) =>
@@ -105,9 +114,10 @@ export function LocalAiAssistant() {
   const importPlan = useFloorPlanStore((state) => state.importPlan);
   const setActiveView = useFloorPlanStore((state) => state.setActiveView);
 
-  const [status, setStatus] = useState<OllamaStatus | null>(null);
+  const [status, setStatus] = useState<AiStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const [model, setModel] = useState("llama3.2");
+  const activeProvider = useAiProvider();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [mode, setMode] = useState<AssistantMode>("ask");
   const [draft, setDraft] = useState("");
@@ -149,7 +159,7 @@ export function LocalAiAssistant() {
 
   const refreshStatus = useCallback(async () => {
     setChecking(true);
-    const next = await checkOllamaStatus();
+    const next = await checkAiStatus();
     setStatus(next);
     setChecking(false);
     setError(null);
@@ -160,10 +170,37 @@ export function LocalAiAssistant() {
     }
   }, []);
 
+  const reloadStatus = useCallback(async () => {
+    setChecking(true);
+    setError(null);
+    try {
+      const next = await reloadAiProvider();
+      setStatus(next);
+      if (next.models.length > 0) {
+        setModel((current) =>
+          next.models.includes(current) ? current : next.models[0],
+        );
+      }
+    } catch (error) {
+      setError(
+        error instanceof Error ? error.message : "Could not reload the AI configuration.",
+      );
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  const switchProvider = useCallback((provider: AiProvider) => {
+    if (streaming || provider === activeProvider) return;
+    setAiProviderPreference(provider);
+    setStatus(null);
+    setModel(provider === "gemini" ? DEFAULT_GEMINI_MODEL : "llama3.2");
+  }, [activeProvider, streaming]);
+
   useEffect(() => {
-    if (!open || status) return;
+    if (!open) return;
     void refreshStatus();
-  }, [open, status, refreshStatus]);
+  }, [open, activeProvider, refreshStatus]);
 
   useEffect(() => {
     let alive = true;
@@ -267,7 +304,7 @@ export function LocalAiAssistant() {
           message.id === assistantId && !message.content.trim()
             ? {
                 ...message,
-                content: "The local model returned an empty response.",
+                content: "The AI provider returned an empty response.",
               }
             : message,
         ),
@@ -277,7 +314,7 @@ export function LocalAiAssistant() {
       const detail =
         streamError instanceof Error
           ? streamError.message
-          : "The local model request failed.";
+          : "The AI request failed.";
       setMessages((current) =>
         current.map((message) =>
           message.id === assistantId
@@ -320,7 +357,7 @@ export function LocalAiAssistant() {
 
     void runStream(
       "Run a full spatial compliance audit.",
-      (options) => analyzeComplianceWithLLM(walls, openings, options),
+      (options) => analyzeComplianceWithAI(walls, openings, options),
     );
   };
 
@@ -329,7 +366,7 @@ export function LocalAiAssistant() {
     if (!question || streaming || !status?.online) return;
     setDraft("");
     void runStream(question, (options) =>
-      askPlanQuestion(question, walls, openings, options),
+      askPlanQuestionWithAI(question, walls, openings, options),
     );
   };
 
@@ -577,9 +614,11 @@ export function LocalAiAssistant() {
                 )}
               />
               {checking
-                ? "Checking Ollama"
+                ? "Checking AI provider"
                 : status?.online
-                  ? "Local AI Connected: Ollama"
+                  ? status.provider === "gemini"
+                    ? `Gemini Ready: ${model}`
+                    : "Local AI Connected: Ollama"
                   : "Offline Mode"}
             </p>
           </div>
@@ -587,11 +626,11 @@ export function LocalAiAssistant() {
         <div className="flex items-center gap-1">
           <button
             type="button"
-            onClick={() => void refreshStatus()}
+            onClick={() => void reloadStatus()}
             disabled={checking}
             className="rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-slate-200 disabled:opacity-40"
-            aria-label="Refresh Ollama status"
-            title="Refresh Ollama status"
+            aria-label="Reload AI configuration"
+            title="Reload AI configuration"
           >
             <RefreshCw
               className={cn("h-4 w-4", checking && "animate-spin")}
@@ -631,6 +670,28 @@ export function LocalAiAssistant() {
       <div className="space-y-3 border-b border-line px-4 py-3">
         <div className="grid grid-cols-2 rounded-lg border border-line bg-black/20 p-0.5">
           {([
+            { id: "gemini", label: "Gemini" },
+            { id: "ollama", label: "Local" },
+          ] as const).map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => switchProvider(option.id)}
+              disabled={streaming}
+              aria-pressed={activeProvider === option.id}
+              className={cn(
+                "rounded-md px-2 py-1.5 text-[10px] font-medium transition disabled:opacity-40",
+                activeProvider === option.id
+                  ? "bg-violet-500/15 text-violet-200"
+                  : "text-slate-500 hover:text-slate-200",
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <div className="grid grid-cols-2 rounded-lg border border-line bg-black/20 p-0.5">
+          {([
             { id: "ask", label: "Ask about plan" },
             { id: "generate", label: "Generate plan" },
           ] as const).map((option) => (
@@ -658,7 +719,7 @@ export function LocalAiAssistant() {
               onChange={(event) => setModel(event.currentTarget.value)}
               disabled={!status?.online || checking}
               className="min-w-0 flex-1 bg-transparent text-[11px] text-slate-200 outline-none disabled:text-slate-500"
-              aria-label="Ollama model"
+              aria-label="AI model"
             >
               {visibleModels.map((option) => (
                 <option key={option} value={option}>
@@ -684,18 +745,38 @@ export function LocalAiAssistant() {
           <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] p-3 text-[11px] leading-relaxed text-amber-100/90">
             <div className="flex items-center gap-2 font-medium text-amber-200">
               <WifiOff className="h-3.5 w-3.5" />
-              Local AI is offline
+              {status.provider === "gemini"
+                ? "Gemini is not configured"
+                : "Local AI is offline"}
             </div>
-            <p className="mt-1.5 text-amber-100/70">
-              Start Ollama, pull a model, then refresh this panel. The offline
-              Audit button still runs the deterministic rule engine; AI
-              questions and generation need a local model.
-            </p>
-            <div className="mt-2 space-y-1 rounded-lg border border-amber-500/15 bg-black/25 p-2 font-mono text-[10px] text-amber-100/80">
-              <p>ollama run llama3.2</p>
-              <p>ollama serve</p>
-              <p className="text-amber-100/50">set OLLAMA_ORIGINS=*</p>
-            </div>
+            {status.provider === "gemini" ? (
+              <>
+                <p className="mt-1.5 text-amber-100/70">
+                  Add <code className="font-mono">GEMINI_API_KEY</code> to the
+                  app config file, then choose Reload in the warning banner or
+                  refresh this panel. The offline Audit button still runs the
+                  deterministic rule engine.
+                </p>
+                {status.configPath ? (
+                  <p className="mt-2 break-all rounded-lg border border-amber-500/15 bg-black/25 p-2 font-mono text-[10px] text-amber-100/70">
+                    {status.configPath}
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <p className="mt-1.5 text-amber-100/70">
+                  Start Ollama, pull a model, then refresh this panel. The
+                  offline Audit button still runs the deterministic rule
+                  engine; AI questions and generation need a local model.
+                </p>
+                <div className="mt-2 space-y-1 rounded-lg border border-amber-500/15 bg-black/25 p-2 font-mono text-[10px] text-amber-100/80">
+                  <p>ollama run llama3.2</p>
+                  <p>ollama serve</p>
+                  <p className="text-amber-100/50">set OLLAMA_ORIGINS=*</p>
+                </div>
+              </>
+            )}
             {status.error ? (
               <p className="mt-2 break-all text-[10px] text-amber-100/50">
                 {status.error}
@@ -780,7 +861,9 @@ export function LocalAiAssistant() {
             <p className="mt-2 text-[10px] text-slate-500">
               {mode === "generate"
                 ? "Review the editable draft before applying it."
-                : "Requests go only to the Ollama server on this machine."}
+                : status?.provider === "gemini"
+                  ? "Requests go to the Gemini API using your local key."
+                  : "Requests go only to the Ollama server on this machine."}
             </p>
           </div>
         ) : null}
@@ -796,11 +879,15 @@ export function LocalAiAssistant() {
             )}
           >
             <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-              {message.role === "user" ? "You" : "Local AI"}
+              {message.role === "user"
+                ? "You"
+                : status?.provider === "gemini"
+                  ? "Gemini"
+                  : "Local AI"}
             </p>
             <p className="whitespace-pre-wrap break-words">
               {message.content ||
-                (streaming ? "Thinking locally…" : "No response.")}
+                (streaming ? "Thinking…" : "No response.")}
             </p>
             {message.liveOutput ? (
               <details
@@ -877,7 +964,9 @@ export function LocalAiAssistant() {
                 ? mode === "generate"
                   ? "e.g. 2-bedroom, 30×24 ft…"
                   : "Ask about circulation, egress, or layout…"
-                : "Start Ollama to chat with the local model"
+                : status?.provider === "gemini"
+                  ? "Add a Gemini key in the config file"
+                  : "Start Ollama to chat with the local model"
             }
             disabled={!status?.online || streaming}
             className="max-h-28 min-h-[42px] flex-1 resize-none rounded-lg border border-line bg-black/25 px-2.5 py-2 text-[11px] text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-accent/50 focus:ring-2 focus:ring-accent/10 disabled:opacity-50"
@@ -947,8 +1036,10 @@ export function LocalAiAssistant() {
         <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500">
           <span>
             {status?.online
-              ? `${model} · localhost:11434`
-              : "Local-only · no cloud calls"}
+              ? `${model} · ${status.provider === "gemini" ? "Gemini API" : "localhost:11434"}`
+              : status?.provider === "gemini"
+                ? "Gemini · not configured"
+                : "Local-only · no cloud calls"}
           </span>
           <button
             type="button"

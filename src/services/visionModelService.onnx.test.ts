@@ -27,6 +27,7 @@ import {
 } from "./visionModelService";
 import { suggestFurnitureWithLocalAI } from "./furnitureAiService";
 import { checkOllamaStatus, DEFAULT_AI_MODELS } from "./localAiService";
+import { setAiProviderPreference } from "./aiProvider";
 
 const ROOT = process.cwd();
 const MODEL_PATH = path.resolve(ROOT, "public/models/floorplan-layout.onnx");
@@ -627,6 +628,7 @@ describe.each(SAMPLES)("real ONNX model on %s", (samplePath) => {
       expect(furniturePlan.furniture.some((item) => item.kind === "nightstand")).toBe(true);
 
       if (process.env.RUN_LOCAL_AI_FURNITURE_TEST === "1") {
+        setAiProviderPreference("ollama");
         const status = await checkOllamaStatus();
         if (!status.online || status.models.length === 0) {
           throw new Error("RUN_LOCAL_AI_FURNITURE_TEST requires a running Ollama model.");

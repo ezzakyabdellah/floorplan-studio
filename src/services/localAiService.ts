@@ -1,7 +1,4 @@
-import type { Opening, Wall } from "../types/floorplan";
 import { isTauriRuntime } from "../utils/fileIO";
-import { wallLength } from "../utils/geometry";
-import { runComplianceChecks } from "../utils/spatialRules";
 import { logAiError, logAiOutput } from "./aiLog";
 
 export const OLLAMA_BASE_URL = "http://localhost:11434";
@@ -23,6 +20,10 @@ export type StreamOptions = {
   numPredict?: number;
   numContext?: number;
   timeoutMs?: number;
+  /** Optional instruction kept separate for providers that support system prompts. */
+  systemInstruction?: string;
+  /** Optional sampling temperature; defaults are provider-specific. */
+  temperature?: number;
   /** Called when the request timeout is reached; choose whether to keep waiting. */
   onTimeout?: (respond: (continueWaiting: boolean) => void) => void;
   /** Called when no timeout decision was made within the response window. */
@@ -98,45 +99,6 @@ export async function checkOllamaStatus(
   }
 }
 
-function buildPlanContext(walls: Wall[], openings: Opening[]) {
-  const wallLines = walls.slice(0, 120).map((wall, index) => {
-    return `W${index + 1}: (${wall.x1.toFixed(1)}, ${wall.y1.toFixed(1)}) -> (${wall.x2.toFixed(1)}, ${wall.y2.toFixed(1)}), length ${wallLength(wall).toFixed(1)} ft, thickness ${wall.thickness.toFixed(2)} ft, height ${wall.height.toFixed(1)} ft`;
-  });
-
-  const openingLines = openings.slice(0, 80).map((opening, index) => {
-    const wallIndex = walls.findIndex((wall) => wall.id === opening.wallId);
-    return `O${index + 1}: ${opening.type} on W${wallIndex + 1}, clear width ${(opening.width * 12).toFixed(1)} in, position ${(opening.positionOnWall * 100).toFixed(0)}% along the wall`;
-  });
-
-  const report = runComplianceChecks(walls, openings);
-  const checkLines = report.checks.map(
-    (check) =>
-      `- [${check.status.toUpperCase()}] ${check.title}: ${check.detail}`,
-  );
-
-  return [
-    `Scene summary: ${walls.length} walls, ${openings.length} openings. Units are feet.`,
-    "Deterministic rule engine results:",
-    checkLines.length > 0 ? checkLines.join("\n") : "- No checks available.",
-    "Wall geometry:",
-    wallLines.length > 0 ? wallLines.join("\n") : "- No walls in the plan.",
-    "Openings:",
-    openingLines.length > 0
-      ? openingLines.join("\n")
-      : "- No doors or windows in the plan.",
-  ].join("\n");
-}
-
-function buildSystemPrompt() {
-  return [
-    "You are an expert architectural code and spatial-compliance inspector embedded in a desktop floor-plan editor.",
-    "Analyze the supplied plan geometry and deterministic rule results.",
-    "Reference relevant concerns such as egress width, ADA accessibility, circulation, wall connectivity, room proportions, and door swing space.",
-    "Be concise, practical, and specific. Use short bullet points with a severity label such as INFO, WARNING, or CRITICAL.",
-    "Do not invent measurements that are not present in the supplied scene data.",
-  ].join(" ");
-}
-
 async function streamOllama(
   prompt: string,
   options: StreamOptions,
@@ -151,7 +113,7 @@ async function streamOllama(
         model,
         prompt,
         stream: true,
-        options: { temperature: 0.2 },
+        options: { temperature: options.temperature ?? 0.2 },
       }),
       signal: options.signal,
     });
@@ -298,7 +260,7 @@ export async function generateLocalJson(
         stream: Boolean(options.onChunk),
         format,
         options: {
-          temperature: 0.1,
+          temperature: options.temperature ?? 0.1,
           num_predict: options.numPredict ?? 512,
           num_ctx: options.numContext ?? 4096,
         },
@@ -381,45 +343,4 @@ export async function generateLocalJson(
     controller.signal.removeEventListener("abort", controllerAbortHandler);
     options.signal?.removeEventListener("abort", abortHandler);
   }
-}
-
-export function analyzeComplianceWithLLM(
-  walls: Wall[],
-  openings: Opening[],
-  options: StreamOptions = {},
-): Promise<string> {
-  const prompt = [
-    buildSystemPrompt(),
-    "",
-    "Perform a full spatial compliance audit of this floor plan.",
-    buildPlanContext(walls, openings),
-    "",
-    "Return 4 to 7 prioritized findings. End with one short recommended next step.",
-  ].join("\n");
-
-  return streamOllama(prompt, {
-    ...options,
-    operation: options.operation ?? "floorplan-compliance-audit",
-  });
-}
-
-export function askPlanQuestion(
-  question: string,
-  walls: Wall[],
-  openings: Opening[],
-  options: StreamOptions = {},
-): Promise<string> {
-  const prompt = [
-    buildSystemPrompt(),
-    "",
-    `User question: ${question}`,
-    buildPlanContext(walls, openings),
-    "",
-    "Answer the question directly using the scene data. If the plan does not contain enough information, say what is missing.",
-  ].join("\n");
-
-  return streamOllama(prompt, {
-    ...options,
-    operation: options.operation ?? "floorplan-question",
-  });
 }

@@ -10,11 +10,8 @@ import {
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
-import {
-  DEFAULT_AI_MODELS,
-  checkOllamaStatus,
-  type OllamaStatus,
-} from "../../services/localAiService";
+import { DEFAULT_AI_MODELS } from "../../services/localAiService";
+import { checkAiStatus, type AiStatus } from "../../services/aiProvider";
 import {
   formatDesignPatchSummary,
   requestDesignToolCall,
@@ -266,7 +263,7 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
   );
   const audit = useProjectStore((state) => state.auditBuildingCode);
   const [report, setReport] = useState(() => audit());
-  const [status, setStatus] = useState<OllamaStatus | null>(null);
+  const [status, setStatus] = useState<AiStatus | null>(null);
   const [model, setModel] = useState(DEFAULT_AI_MODELS[0]);
   const [draft, setDraft] = useState("");
   const [copilotMessage, setCopilotMessage] = useState(
@@ -279,7 +276,7 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
 
   useEffect(() => {
     let alive = true;
-    void checkOllamaStatus().then((next) => {
+    void checkAiStatus().then((next) => {
       if (!alive) return;
       setStatus(next);
       if (next.models.length > 0) setModel(next.models[0]);
@@ -348,7 +345,7 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
             request,
             useProjectStore.getState(),
           );
-          result.response = `Local model unavailable for this request; used the offline parameter parser. ${result.response}`;
+          result.response = `AI provider unavailable for this request; used the offline parameter parser. ${result.response}`;
         }
       } else {
         result = await runOfflineDesignRequest(
@@ -360,7 +357,7 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
       if (result.audit) setReport(result.audit);
       const responseUnits = useProjectStore.getState().units;
       setCopilotMessage(
-        `${result.response}\n\n${formatDesignPatchSummary(result.patch, responseUnits, displayUnit)}\n\nSource: ${result.source === "local-model" ? `${model} via local Ollama` : "offline command parser"}.`,
+        `${result.response}\n\n${formatDesignPatchSummary(result.patch, responseUnits, displayUnit)}\n\nSource: ${result.source === "local-model" ? `${model} via ${status?.provider === "gemini" ? "Gemini" : "local Ollama"}` : "offline command parser"}.`,
       );
     } catch (submitError) {
       if (status?.online) {
@@ -465,7 +462,11 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
                 : "border-amber-500/20 bg-amber-500/10 text-amber-300",
             )}
           >
-            {status?.online ? "Local AI connected" : "Offline-ready"}
+            {status?.online
+              ? status.provider === "gemini"
+                ? "Gemini ready"
+                : "Local AI connected"
+              : "Offline-ready"}
           </span>
           <select
             value={displayUnit}
@@ -753,7 +754,7 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
                     <select
                       value={model}
                       onChange={(event) => setModel(event.currentTarget.value)}
-                      aria-label="Local AI model"
+                      aria-label="AI model"
                       className="mb-2 w-full rounded-lg border border-line bg-black/25 px-2 py-1.5 text-[10px] text-slate-300 outline-none"
                     >
                       {(status.models.length ? status.models : DEFAULT_AI_MODELS).map((option) => (
@@ -796,7 +797,10 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
                     </button>
                   </div>
                   <p className="mt-1.5 text-[9px] text-slate-600">
-                    Local-only · No cloud calls · Math is never delegated to AI
+                    {status?.provider === "gemini"
+                      ? "Gemini API · Requests use your configured key"
+                      : "Local-only · No cloud calls"}{" "}
+                    · Math is never delegated to AI
                   </p>
                   <p className="mt-1 text-[8px] leading-relaxed text-slate-600">
                     AI outputs/errors append to {aiLogLocation}. Prompts are not

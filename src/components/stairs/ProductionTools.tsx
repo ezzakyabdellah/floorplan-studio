@@ -50,11 +50,11 @@ import { saveEngineeringFile } from "../../engineering/fileExport";
 import { createDefaultProjectState, useProjectStore } from "../../engineering/projectStore";
 import { formatLength } from "../../engineering/units";
 import type { ProjectState } from "../../engineering/types";
-import type { OllamaStatus } from "../../services/localAiService";
+import type { AiStatus } from "../../services/aiProvider";
 import { cn } from "../../utils/cn";
 
 type Props = {
-  status: OllamaStatus | null;
+  status: AiStatus | null;
   model: string;
 };
 type ToolTab = "materials" | "advisors" | "inspection" | "projects";
@@ -224,7 +224,7 @@ function AdviceCard({
         <h3 className="text-[11px] font-semibold text-slate-200">{title}</h3>
         {result ? (
           <span className="rounded-full border border-line px-2 py-0.5 text-[8px] uppercase tracking-wider text-slate-500">
-            {result.source === "local-model" ? "Local AI" : "Offline fallback"}
+            {result.source === "local-model" ? "AI model" : "Offline fallback"}
           </span>
         ) : null}
       </div>
@@ -712,7 +712,7 @@ export function ProductionTools({ status, model }: Props) {
             <PanelTitle
               icon={Sparkles}
               title="Advisory-only structural & sourcing guidance"
-              detail={status?.online ? `Local model: ${model}` : "Offline mode: deterministic guidance is available; no AI model connection detected."}
+              detail={status?.online ? `${status.provider === "gemini" ? "Gemini model" : "Local model"}: ${model}` : "Offline mode: deterministic guidance is available; no AI model connection detected."}
             />
             <div className="flex flex-wrap gap-2">
               <button type="button" disabled={advisorBusy !== null} onClick={() => void runAdvisor("structural")} className={buttonClass}>

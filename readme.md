@@ -81,3 +81,38 @@ Begin now.
 > - **Linux (`systemd`):** Add `Environment="OLLAMA_VULKAN=1"` and `Environment="OLLAMA_IGPU_ENABLE=1"` via `sudo systemctl edit ollama` and restart the service.
 >
 > Verify with `ollama ps` while a model is running. If token speed (`--verbose`) is slower than CPU, remove these variables to revert to CPU mode.
+
+---
+
+## Optional cloud AI (Google Gemini)
+
+The app can use Google Gemini through the official `@google/genai` SDK. Tauri
+reads a per-user config file and passes it to React; there is no separate
+backend process, and no key is baked into the installer.
+
+Once configured, Gemini powers all AI features: the AI assistant (Ask, Audit,
+Generate plan), AI Furnish, the stairs design copilot, design advisors, and
+workshop notes. The AI assistant has a **Gemini / Local** switch; Auto mode
+uses Gemini when a key is present and falls back to Ollama otherwise.
+
+On first launch the app creates the file and shows a warning if the key is
+missing:
+
+| OS | Config file |
+| --- | --- |
+| Windows | `%APPDATA%\com.floorplan.studio\.env` |
+| macOS | `~/Library/Application Support/com.floorplan.studio/.env` |
+| Linux | `~/.config/com.floorplan.studio/.env` |
+
+```env
+GEMINI_API_KEY=your-google-ai-studio-api-key
+GEMINI_MODEL=gemini-4-hydrogen
+GEMINI_FAST_MODEL=gemini-3.5-flash-lite
+```
+
+Use **Reveal file** / **Reload** in the warning banner after editing it.
+
+- Frontend client: `src/services/geminiService.ts`
+- Config plumbing: `src-tauri/src/config.rs` and `src/services/appEnv.ts`
+- Full setup, API reference, and security notes:
+  [docs/gemini-integration.md](docs/gemini-integration.md)

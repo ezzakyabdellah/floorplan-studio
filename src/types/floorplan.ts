@@ -35,7 +35,7 @@ export type FurnitureKind =
   | "dining-table"
   | "chair";
 
-export type FurnitureSource = "local-llm" | "geometry";
+export type FurnitureSource = "gemini" | "local-llm" | "geometry";
 
 export type Furniture = {
   id: string;

@@ -22,12 +22,12 @@ import {
   lengthUnitLabel,
   projectLengthFromDisplay,
 } from "../../engineering/units";
-import type { OllamaStatus } from "../../services/localAiService";
+import type { AiStatus } from "../../services/aiProvider";
 import type { ProjectState } from "../../engineering/types";
 import { cn } from "../../utils/cn";
 
 type Props = {
-  status: OllamaStatus | null;
+  status: AiStatus | null;
   model: string;
 };
 
@@ -319,7 +319,7 @@ export function WorkshopDrawings({ status, model }: Props) {
           source: "deterministic",
         });
         setMessage(
-          "Ollama is offline; deterministic project-specific assembly and cutting notes are ready.",
+          `${status?.provider === "gemini" ? "Gemini" : "Ollama"} is offline; deterministic project-specific assembly and cutting notes are ready.`,
         );
         return;
       }
@@ -332,7 +332,7 @@ export function WorkshopDrawings({ status, model }: Props) {
           return;
         }
         setSavedNotes({ signature: snapshotSignature, notes, source: "local-model" });
-        setMessage("Local AI generated notes from the verified project parameters and metrics.");
+        setMessage("AI generated notes from the verified project parameters and metrics.");
       } catch (modelError) {
         setSavedNotes({
           signature: snapshotSignature,
@@ -340,7 +340,7 @@ export function WorkshopDrawings({ status, model }: Props) {
           source: "deterministic",
         });
         setMessage(
-          `Local AI notes were unavailable; deterministic notes were used instead. ${formatError(modelError)}`,
+          `AI notes were unavailable; deterministic notes were used instead. ${formatError(modelError)}`,
         );
       }
     } finally {

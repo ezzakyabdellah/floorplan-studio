@@ -2,6 +2,7 @@ import { useState } from "react";
 import { AppShell } from "./components/layout/AppShell";
 import { ProjectStartScreen } from "./components/layout/ProjectStartScreen";
 import { StairLadderStudio } from "./components/stairs/StairLadderStudio";
+import { EnvConfigWarning } from "./components/ui/EnvConfigWarning";
 import { useProjectStore } from "./engineering/projectStore";
 import type { LocalProject } from "./engineering/projectLibrary";
 import { useFloorPlanStore } from "./store/floorPlanStore";
@@ -35,29 +36,24 @@ export default function App() {
     setScreen("stairs");
   };
 
-  if (screen === "home") {
-    return (
+  const content =
+    screen === "home" ? (
       <ProjectStartScreen
         onCreateFloorPlan={createFloorPlan}
         onCreateStairProject={createStairProject}
         onOpenFloorPlan={openFloorPlan}
         onOpenStairProject={openStairProject}
       />
+    ) : screen === "stairs" ? (
+      <StairLadderStudio onBack={() => setScreen("home")} backLabel="Home" />
+    ) : (
+      <AppShell onHome={() => setScreen("home")} />
     );
-  }
-
-  if (screen === "stairs") {
-    return (
-      <StairLadderStudio
-        onBack={() => setScreen("home")}
-        backLabel="Home"
-      />
-    );
-  }
 
   return (
-    <AppShell
-      onHome={() => setScreen("home")}
-    />
+    <>
+      <EnvConfigWarning />
+      {content}
+    </>
   );
 }

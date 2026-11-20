@@ -1,4 +1,4 @@
-import { generateLocalJson, type StreamOptions } from "../services/localAiService";
+import { generateAiJson, type StreamOptions } from "../services/aiProvider";
 import { logAiError } from "../services/aiLog";
 import { runBuildingCodeAudit } from "./buildingCodeAudit";
 import {
@@ -382,7 +382,7 @@ export async function requestDesignToolCall(
   const responseUnits = explicitPatch?.units ?? state.units;
   const responseUnitLabel = responseUnits === "metric" ? "mm" : "in";
   const schemas = DESIGN_TOOL_SCHEMAS.map((tool) => JSON.stringify(tool)).join("\n");
-  const raw = await generateLocalJson(
+  const raw = await generateAiJson(
     [
       "You are a parameter-extraction copilot for a stair and ladder calculator.",
       "Return only the JSON schema requested. Do not calculate geometry, safety, code compliance, angles, or dimensions.",

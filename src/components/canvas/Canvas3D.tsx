@@ -280,7 +280,7 @@ export function Canvas3D() {
         <div className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-line glass p-1 shadow-lg shadow-black/30">
           {furniture.length > 0 ? (
             <span className="px-1.5 text-[10px] text-slate-500">
-              {furniture.length} pieces · {roomCount} rooms · {furniture[0].source === "local-llm" ? "Local AI" : "Geometry guess"}
+              {furniture.length} pieces · {roomCount} rooms · {furniture[0].source === "gemini" ? "Gemini" : furniture[0].source === "local-llm" ? "Local AI" : "Geometry guess"}
             </span>
           ) : (
             <span className="px-1.5 text-[10px] text-slate-500">

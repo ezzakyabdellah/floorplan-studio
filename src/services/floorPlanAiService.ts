@@ -1,4 +1,4 @@
-import { generateLocalJson, type StreamOptions } from "./localAiService";
+import { generateAiJson, type StreamOptions } from "./aiProvider";
 import {
   critiqueFloorPlanLayout,
   type LayoutDiagnostic,
@@ -870,7 +870,7 @@ async function generateStructuredPass<T>(
     options.onChunk?.(`\n[${operation}: attempt ${attempt}/5]\n`);
     let output = "";
     try {
-      output = await generateLocalJson(
+      output = await generateAiJson(
         currentPrompt,
         {
           ...options,

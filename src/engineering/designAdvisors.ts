@@ -1,4 +1,4 @@
-import { generateLocalJson } from "../services/localAiService";
+import { generateAiJson } from "../services/aiProvider";
 import type { MaterialLine } from "./billOfMaterials";
 import type { ProjectState } from "./types";
 
@@ -78,7 +78,7 @@ export async function requestStructuralAdvice(
       ladder: project.ladderParams,
       deterministicMetrics: project.calculatedMetrics,
     };
-    const raw = await generateLocalJson(
+    const raw = await generateAiJson(
       [
         "You are an advisory-only construction checklist assistant.",
         "Do not calculate loads, capacities, spans, code compliance, or member sizes.",
@@ -173,7 +173,7 @@ export async function requestCostSourcingAdvice(
       })),
       deterministicIllustrativeRange: estimate,
     };
-    const raw = await generateLocalJson(
+    const raw = await generateAiJson(
       [
         "You are an advisory-only materials sourcing assistant.",
         "Do not invent live prices, suppliers, availability, or quotations. Do not change or recompute the provided estimate.",

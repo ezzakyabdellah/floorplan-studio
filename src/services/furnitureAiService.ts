@@ -3,11 +3,12 @@ import { furnitureCatalogItem } from "../data/furnitureCatalog";
 import { scaleFurnitureToWalls } from "../utils/furnitureScale";
 import { pointAtDistance, wallLength } from "../utils/geometry";
 import {
-  DEFAULT_AI_MODELS,
-  checkOllamaStatus,
-  generateLocalJson,
+  checkAiStatus,
+  generateAiJson,
+  resolveAiProvider,
   type StreamOptions,
-} from "./localAiService";
+} from "./aiProvider";
+import { DEFAULT_AI_MODELS } from "./localAiService";
 import {
   inferFurnitureRooms,
   suggestFurnitureLayout,
@@ -17,12 +18,12 @@ import {
 } from "./furniturePlanner";
 
 export type AiFurnitureResult = FurniturePlan & {
-  model: string;
+  model?: string;
 };
 
 export type FurnitureAssistanceResult = {
   plan: FurniturePlan;
-  mode: "local-llm" | "geometry";
+  mode: "gemini" | "local-llm" | "geometry";
   model?: string;
   note: string;
 };
@@ -164,8 +165,10 @@ export async function suggestFurnitureWithLocalAI(
     throw new Error("The floor plan does not contain any enclosed rooms to furnish.");
   }
 
-  const model = options.model?.trim() || "llama3.2";
-  const response = await generateLocalJson(
+  const provider = await resolveAiProvider();
+  const model =
+    options.model?.trim() || (provider === "gemini" ? undefined : "llama3.2");
+  const response = await generateAiJson(
     buildFurniturePrompt(walls, openings, rooms),
     { ...options, model },
   );
@@ -191,7 +194,7 @@ export async function suggestFurnitureWithLocalAI(
       id: `local-ai-${item.roomId}-${index}`,
       roomId: item.roomId,
       kind: item.kind as FurnitureKind,
-      source: "local-llm",
+      source: provider === "gemini" ? "gemini" : "local-llm",
       roomLabel: room.label,
       x: item.x as number,
       y: item.y as number,
@@ -263,7 +266,7 @@ export async function generateFurnitureLayoutWithAI(
   openings: Opening[],
   options: StreamOptions = {},
 ): Promise<FurnitureAssistanceResult> {
-  const status = await checkOllamaStatus(options.signal);
+  const status = await checkAiStatus(undefined, options.signal);
   if (!status.online || status.models.length === 0) {
     const geometryPlan = suggestFurnitureLayout(walls, openings);
     return {
@@ -272,7 +275,10 @@ export async function generateFurnitureLayoutWithAI(
         furniture: scaleFurnitureToWalls(geometryPlan.furniture, walls),
       },
       mode: "geometry",
-      note: "Ollama is offline; used the local geometry-based room guess.",
+      note:
+        status.provider === "gemini"
+          ? "Gemini is not configured; used the local geometry-based room guess."
+          : "Ollama is offline; used the local geometry-based room guess.",
     };
   }
 
@@ -292,14 +298,16 @@ export async function generateFurnitureLayoutWithAI(
       ...plan,
       furniture: scaleFurnitureToWalls(plan.furniture, walls),
     };
+    const providerLabel = status.provider === "gemini" ? "Gemini" : "Ollama";
     return {
       plan: scaledPlan,
-      mode: "local-llm",
+      mode: status.provider === "gemini" ? "gemini" : "local-llm",
       model,
-      note: `Ollama ${model} suggested ${scaledPlan.furniture.length} placements; room, wall, and door clearances were checked locally.`,
+      note: `${providerLabel} ${model} suggested ${scaledPlan.furniture.length} placements; room, wall, and door clearances were checked locally.`,
     };
   } catch (error) {
     const geometryPlan = suggestFurnitureLayout(walls, openings);
+    const providerLabel = status.provider === "gemini" ? "Gemini" : "Ollama";
     return {
       plan: {
         ...geometryPlan,
@@ -307,7 +315,7 @@ export async function generateFurnitureLayoutWithAI(
       },
       mode: "geometry",
       model,
-      note: `Ollama could not return a safe layout; used the local geometry-based guess${error instanceof Error ? ` (${error.message})` : ""}.`,
+      note: `${providerLabel} could not return a safe layout; used the local geometry-based guess${error instanceof Error ? ` (${error.message})` : ""}.`,
     };
   }
 }
