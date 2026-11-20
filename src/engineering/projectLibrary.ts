@@ -1,3 +1,4 @@
+import { isLengthUnit } from "./units";
 import type { ProjectState } from "./types";
 
 export type ProjectRevision = {
@@ -37,6 +38,7 @@ function isProjectState(value: unknown): value is ProjectState {
     isRecord(value) &&
     (value.projectType === "staircase" || value.projectType === "ladder") &&
     (value.units === "imperial" || value.units === "metric") &&
+    (value.displayUnit === undefined || isLengthUnit(value.displayUnit)) &&
     isRecord(value.stairParams) &&
     isRecord(value.ladderParams) &&
     isRecord(value.calculatedMetrics)

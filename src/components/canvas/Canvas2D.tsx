@@ -29,6 +29,12 @@ import {
   wallLength,
 } from "../../utils/geometry";
 import { cn } from "../../utils/cn";
+import {
+  formatFeetLength,
+  formatFeetNumber,
+  gridStepFor,
+  unitsPerFoot,
+} from "../../utils/floorPlanUnits";
 import { FURNITURE_CATALOG, furnitureCatalogItem } from "../../data/furnitureCatalog";
 
 type View = {
@@ -84,6 +90,7 @@ export function Canvas2D() {
   const openings = useFloorPlanStore((state) => state.openings);
   const furniture = useFloorPlanStore((state) => state.furniture);
   const activeTool = useFloorPlanStore((state) => state.activeTool);
+  const unit = useFloorPlanStore((state) => state.unit);
   const selectedWallId = useFloorPlanStore((state) => state.selectedWallId);
   const selectedOpeningId = useFloorPlanStore(
     (state) => state.selectedOpeningId,
@@ -387,19 +394,22 @@ export function Canvas2D() {
     ctx.fillStyle = background;
     ctx.fillRect(0, 0, size.width, size.height);
 
-    const minorStep = scale < 5 ? 5 : scale < 10 ? 2 : 1;
+    const displayUnitsPerFoot = unitsPerFoot(unit);
+    const gridStep = gridStepFor(unit, scale / displayUnitsPerFoot);
+    const minorStep = gridStep / displayUnitsPerFoot;
     const majorEvery = 5;
     const left = (0 - tx) / scale;
     const right = (size.width - tx) / scale;
     const top = (0 - ty) / scale;
     const bottom = (size.height - ty) / scale;
 
-    const startX = Math.floor(left / minorStep) * minorStep;
-    const startY = Math.floor(top / minorStep) * minorStep;
+    const startXIndex = Math.floor(left / minorStep);
+    const startYIndex = Math.floor(top / minorStep);
 
     ctx.lineWidth = 1;
-    for (let x = startX; x <= right; x += minorStep) {
-      const index = Math.round(x / minorStep);
+    for (let index = startXIndex; ; index += 1) {
+      const x = index * minorStep;
+      if (x > right) break;
       const isMajor = index % majorEvery === 0;
       const screenX = Math.round(sx(x)) + 0.5;
       ctx.strokeStyle = isMajor
@@ -415,12 +425,13 @@ export function Canvas2D() {
         ctx.font = "9px ui-monospace, SFMono-Regular, monospace";
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
-        ctx.fillText(`${Math.round(x)}`, screenX, 6);
+        ctx.fillText(formatFeetNumber(x, unit), screenX, 6);
       }
     }
 
-    for (let y = startY; y <= bottom; y += minorStep) {
-      const index = Math.round(y / minorStep);
+    for (let index = startYIndex; ; index += 1) {
+      const y = index * minorStep;
+      if (y > bottom) break;
       const isMajor = index % majorEvery === 0;
       const screenY = Math.round(sy(y)) + 0.5;
       ctx.strokeStyle = isMajor
@@ -436,7 +447,7 @@ export function Canvas2D() {
         ctx.font = "9px ui-monospace, SFMono-Regular, monospace";
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
-        ctx.fillText(`${Math.round(y)}`, 6, screenY);
+        ctx.fillText(formatFeetNumber(y, unit), 6, screenY);
       }
     }
 
@@ -565,7 +576,7 @@ export function Canvas2D() {
         const offsetX = -Math.sin(angle) * 18;
         const offsetY = Math.cos(angle) * 18;
         drawPill(
-          `${wallLength(wall).toFixed(1)} ft`,
+          formatFeetLength(wallLength(wall), unit),
           midpoint.x + offsetX,
           midpoint.y + offsetY,
           true,
@@ -689,7 +700,7 @@ export function Canvas2D() {
         const offsetX = -Math.sin(angle) * 18;
         const offsetY = Math.cos(angle) * 18;
         drawPill(
-          `${distance(drawStart, cursor).toFixed(1)} ft`,
+          formatFeetLength(distance(drawStart, cursor), unit),
           (start.x + end.x) / 2 + offsetX,
           (start.y + end.y) / 2 + offsetY,
           true,
@@ -766,7 +777,7 @@ export function Canvas2D() {
         }
 
         drawPill(
-          `${activeTool} · ${width.toFixed(1)} ft`,
+          `${activeTool} · ${formatFeetLength(width, unit)}`,
           (start.x + end.x) / 2 - normalX * 22,
           (start.y + end.y) / 2 - normalY * 22,
           true,
@@ -798,6 +809,7 @@ export function Canvas2D() {
     selectedWallId,
     size.height,
     size.width,
+    unit,
     view,
     walls,
   ]);
@@ -1000,11 +1012,11 @@ export function Canvas2D() {
     activeTool === "wall"
       ? drawStart
         ? "Click to place the wall endpoint · Esc to cancel"
-        : "Click to start a wall · snap is 0.5 ft"
+        : `Click to start a wall · snap is ${formatFeetLength(0.5, unit)}`
       : activeTool === "door"
-        ? "Click a wall to place a 3 ft door"
+        ? `Click a wall to place a ${formatFeetLength(DEFAULTS.doorWidth, unit)} door`
         : activeTool === "window"
-          ? "Click a wall to place a 4 ft window"
+          ? `Click a wall to place a ${formatFeetLength(DEFAULTS.windowWidth, unit)} window`
           : "Click a wall, opening or furniture · drag furniture to move · Delete to remove";
 
   return (
@@ -1047,7 +1059,7 @@ export function Canvas2D() {
             <ZoomOut className="h-3.5 w-3.5" />
           </button>
           <span className="min-w-[64px] px-1 text-center font-mono text-[9px] text-slate-500">
-            {view ? `${Math.round(view.scale)} px/ft` : "—"}
+            {view ? `${Math.round(view.scale / unitsPerFoot(unit))} px/${unit}` : "—"}
           </span>
           <button
             type="button"

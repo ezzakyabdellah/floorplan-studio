@@ -3,6 +3,7 @@ import {
   DEFAULTS,
   type ActiveTool,
   type ActiveView,
+  type FloorPlanUnit,
   type Furniture,
   type FurnitureKind,
   type Opening,
@@ -16,8 +17,20 @@ import {
   normalizeFurnitureScaleFactor,
   scaleFurnitureByFactor,
 } from "../utils/furnitureScale";
+import { isFloorPlanUnit } from "../utils/floorPlanUnits";
 
 const FURNITURE_SCALE_STORAGE_KEY = "floorplan-studio:furniture-scale-factor";
+const DISPLAY_UNIT_STORAGE_KEY = "floorplan-studio:display-unit";
+
+function readDisplayUnit(): FloorPlanUnit {
+  try {
+    if (typeof localStorage === "undefined") return "ft";
+    const value = localStorage.getItem(DISPLAY_UNIT_STORAGE_KEY);
+    return isFloorPlanUnit(value) ? value : "ft";
+  } catch {
+    return "ft";
+  }
+}
 
 function readFurnitureScaleFactor() {
   try {
@@ -101,6 +114,7 @@ type FloorPlanState = {
   openings: Opening[];
   furniture: Furniture[];
   furnitureScaleFactor: number;
+  unit: FloorPlanUnit;
   activeView: ActiveView;
   activeTool: ActiveTool;
   selectedWallId: string | null;
@@ -141,6 +155,7 @@ type FloorPlanState = {
   deleteOpening: (id: string) => void;
   setFurniture: (furniture: Furniture[]) => void;
   setFurnitureScaleFactor: (factor: number) => void;
+  setUnit: (unit: FloorPlanUnit) => void;
   addFurniture: (kind: FurnitureKind, x: number, y: number) => string;
   updateFurniture: (id: string, patch: Partial<Omit<Furniture, "id">>) => void;
   deleteFurniture: (id: string) => void;
@@ -160,6 +175,7 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
   openings: initialScene.openings,
   furniture: [],
   furnitureScaleFactor: readFurnitureScaleFactor(),
+  unit: readDisplayUnit(),
   activeView: "2d",
   activeTool: "select",
   selectedWallId: null,
@@ -337,6 +353,18 @@ export const useFloorPlanStore = create<FloorPlanState>((set, get) => ({
       furnitureScaleFactor: nextFactor,
       furniture: scaleFurnitureByFactor(state.furniture, ratio),
     }));
+  },
+
+  setUnit: (unit) => {
+    if (!isFloorPlanUnit(unit)) return;
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(DISPLAY_UNIT_STORAGE_KEY, unit);
+      }
+    } catch {
+      // Keep the in-memory setting usable when browser storage is unavailable.
+    }
+    set({ unit });
   },
 
   addFurniture: (kind, x, y) => {

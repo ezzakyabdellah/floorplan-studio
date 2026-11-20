@@ -163,7 +163,7 @@ export function optimizeCutList(
     totalWastePercent: totalStock > 0 ? (totalWaste / totalStock) * 100 : 0,
     assumptions: [
       "Deterministic best-fit decreasing; separate stock profiles are not mixed.",
-      `Saw kerf allowance: ${formatLength(kerf, project.units)} per cut.`,
+      `Saw kerf allowance: ${formatLength(kerf, project.units, project.displayUnit)} per cut.`,
       "Stringer blank lengths are geometric references; verify end-cut, bearing, and manufacturer allowances before ordering.",
       "Standard stock lengths are 8, 10, 12, and 16 ft; oversized cuts are listed as custom stock.",
     ],
@@ -172,7 +172,7 @@ export function optimizeCutList(
 
 export function cutOptimizationCsv(
   result: CutOptimization,
-  units: ProjectState["units"],
+  project: Pick<ProjectState, "units" | "displayUnit">,
 ): string {
   const rows = [
     ["Stock profile", "Material", "Stock bar", "Stock length", "Part", "Cut length", "Offcut", "Kerf"],
@@ -184,11 +184,11 @@ export function cutOptimizationCsv(
           group.stockProfile,
           group.material,
           String(index + 1),
-          formatLength(pattern.stockLength, units),
+          formatLength(pattern.stockLength, project.units, project.displayUnit),
           cut.label,
-          formatLength(cut.length, units),
-          formatLength(pattern.offcut, units),
-          formatLength(result.kerf, units),
+          formatLength(cut.length, project.units, project.displayUnit),
+          formatLength(pattern.offcut, project.units, project.displayUnit),
+          formatLength(result.kerf, project.units, project.displayUnit),
         ]);
       }
     }

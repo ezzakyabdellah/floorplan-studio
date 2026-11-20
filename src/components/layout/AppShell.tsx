@@ -16,7 +16,6 @@ import {
   PanelsTopLeft,
   PencilRuler,
   Plus,
-  Ruler,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -30,6 +29,15 @@ import { LocalAiAssistant } from "../ui/LocalAiAssistant";
 import { useFloorPlanStore } from "../../store/floorPlanStore";
 import type { ActiveTool } from "../../types/floorplan";
 import { buildSceneFile, openSceneFile, saveSceneFile } from "../../utils/fileIO";
+import {
+  displayLengthToFeet,
+  feetToDisplayLength,
+  floorPlanInputStep,
+  floorPlanUnitLabel,
+  formatFeetLength,
+  formatFeetNumber,
+  FLOOR_PLAN_UNIT_OPTIONS,
+} from "../../utils/floorPlanUnits";
 import { getSceneBounds, wallLength } from "../../utils/geometry";
 import { runComplianceChecks } from "../../utils/spatialRules";
 import { generateFurnitureLayoutWithAI } from "../../services/furnitureAiService";
@@ -150,7 +158,35 @@ function NumberField({
   );
 }
 
+function LengthField({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min?: number;
+  max?: number;
+  onChange: (value: number) => void;
+}) {
+  const unit = useFloorPlanStore((state) => state.unit);
+  return (
+    <NumberField
+      label={label}
+      value={feetToDisplayLength(value, unit)}
+      unit={floorPlanUnitLabel(unit)}
+      min={min === undefined ? undefined : feetToDisplayLength(min, unit)}
+      max={max === undefined ? undefined : feetToDisplayLength(max, unit)}
+      step={floorPlanInputStep(unit)}
+      onChange={(next) => onChange(displayLengthToFeet(next, unit))}
+    />
+  );
+}
+
 function Inspector() {
+  const unit = useFloorPlanStore((state) => state.unit);
   const walls = useFloorPlanStore((state) => state.walls);
   const openings = useFloorPlanStore((state) => state.openings);
   const furniture = useFloorPlanStore((state) => state.furniture);
@@ -191,42 +227,32 @@ function Inspector() {
         </div>
 
         <div className="grid grid-cols-2 gap-2">
-          <NumberField
+          <LengthField
             label="X"
             value={selectedFurniture.x}
-            unit="ft"
-            step={0.1}
             onChange={(x) => updateFurniture(selectedFurniture.id, { x })}
           />
-          <NumberField
+          <LengthField
             label="Y"
             value={selectedFurniture.y}
-            unit="ft"
-            step={0.1}
             onChange={(y) => updateFurniture(selectedFurniture.id, { y })}
           />
-          <NumberField
+          <LengthField
             label="Width"
             value={selectedFurniture.width}
-            unit="ft"
             min={0.2}
-            step={0.1}
             onChange={(width) => updateFurniture(selectedFurniture.id, { width })}
           />
-          <NumberField
+          <LengthField
             label="Depth"
             value={selectedFurniture.depth}
-            unit="ft"
             min={0.2}
-            step={0.1}
             onChange={(depth) => updateFurniture(selectedFurniture.id, { depth })}
           />
-          <NumberField
+          <LengthField
             label="Height"
             value={selectedFurniture.height}
-            unit="ft"
             min={0.2}
-            step={0.1}
             onChange={(height) => updateFurniture(selectedFurniture.id, { height })}
           />
           <NumberField
@@ -258,9 +284,10 @@ function Inspector() {
 
   if (selectedOpening) {
     const wall = walls.find((item) => item.id === selectedOpening.wallId);
-    const inches = selectedOpening.width * 12;
+    const widthInches = selectedOpening.width * 12;
+    const minimumDoorInches = 32;
     const tooNarrow =
-      selectedOpening.type === "door" && inches < 32;
+      selectedOpening.type === "door" && widthInches < minimumDoorInches;
 
     return (
       <div className="space-y-3">
@@ -282,13 +309,11 @@ function Inspector() {
           Host: {wall ? `Wall ${walls.indexOf(wall) + 1}` : "Unknown"}
         </div>
 
-        <NumberField
+        <LengthField
           label="Clear width"
           value={selectedOpening.width}
-          unit="ft"
           min={0.5}
           max={12}
-          step={0.05}
           onChange={(width) => updateOpening(selectedOpening.id, { width })}
         />
 
@@ -317,12 +342,13 @@ function Inspector() {
         {tooNarrow ? (
           <div className="flex items-start gap-2 rounded-lg border border-rose-500/20 bg-rose-500/[0.07] p-2.5 text-[10px] leading-relaxed text-rose-200">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            Door is {inches.toFixed(1)} in wide. Egress minimum is 32 in.
+            Door is {formatFeetLength(selectedOpening.width, unit)} wide. Egress
+            minimum is {formatFeetLength(minimumDoorInches / 12, unit)}.
           </div>
         ) : (
           <div className="flex items-center gap-2 rounded-lg border border-line/70 bg-black/20 p-2.5 text-[10px] text-slate-400">
             <Info className="h-3.5 w-3.5 shrink-0 text-slate-500" />
-            {inches.toFixed(1)} in wide
+            {formatFeetLength(selectedOpening.width, unit)} wide
           </div>
         )}
 
@@ -352,42 +378,38 @@ function Inspector() {
             </p>
           </div>
           <span className="rounded-full border border-line bg-black/20 px-2 py-0.5 font-mono text-[9px] text-slate-400">
-            {length.toFixed(2)} ft
+            {formatFeetLength(length, unit)}
           </span>
         </div>
 
         <div className="grid grid-cols-2 gap-2 rounded-lg border border-line/70 bg-black/20 p-2.5 font-mono text-[10px] text-slate-400">
           <span>
-            X1 {selectedWall.x1.toFixed(1)}
+            X1 {formatFeetNumber(selectedWall.x1, unit)}
             <br />
-            Y1 {selectedWall.y1.toFixed(1)}
+            Y1 {formatFeetNumber(selectedWall.y1, unit)}
           </span>
           <span>
-            X2 {selectedWall.x2.toFixed(1)}
+            X2 {formatFeetNumber(selectedWall.x2, unit)}
             <br />
-            Y2 {selectedWall.y2.toFixed(1)}
+            Y2 {formatFeetNumber(selectedWall.y2, unit)}
           </span>
         </div>
 
         <div className="grid grid-cols-2 gap-2">
-          <NumberField
+          <LengthField
             label="Thickness"
             value={selectedWall.thickness}
-            unit="ft"
             min={0.1}
             max={2}
-            step={0.05}
             onChange={(thickness) =>
               updateWall(selectedWall.id, { thickness })
             }
           />
-          <NumberField
+          <LengthField
             label="Height"
             value={selectedWall.height}
-            unit="ft"
             min={4}
             max={20}
-            step={0.5}
             onChange={(height) => updateWall(selectedWall.id, { height })}
           />
         </div>
@@ -454,6 +476,7 @@ function Inspector() {
 }
 
 function FurnitureLibrary() {
+  const unit = useFloorPlanStore((state) => state.unit);
   const walls = useFloorPlanStore((state) => state.walls);
   const furnitureScaleFactor = useFloorPlanStore((state) => state.furnitureScaleFactor);
   const setFurnitureScaleFactor = useFloorPlanStore((state) => state.setFurnitureScaleFactor);
@@ -507,7 +530,7 @@ function FurnitureLibrary() {
                 event.dataTransfer.setData("application/x-floorplan-furniture", item.kind);
                 event.dataTransfer.effectAllowed = "copy";
               }}
-              title={`${item.description} · ${item.width} × ${item.depth} ft`}
+              title={`${item.description} · ${formatFeetLength(item.width, unit)} × ${formatFeetLength(item.depth, unit)}`}
               className="group flex cursor-grab items-center gap-2 rounded-lg border border-transparent px-1.5 py-1.5 transition hover:border-line hover:bg-white/[0.035] active:cursor-grabbing"
             >
               <span
@@ -521,7 +544,7 @@ function FurnitureLibrary() {
                   {item.label}
                 </span>
                 <span className="block truncate font-mono text-[9px] text-slate-600">
-                  {item.width} × {item.depth} ft
+                  {formatFeetNumber(item.width, unit)} × {formatFeetNumber(item.depth, unit)} {unit}
                 </span>
               </span>
               <button
@@ -693,17 +716,17 @@ function TopBar({
   notify,
   onHome,
   onOpenBlueprint,
-  onOpenStairs,
 }: {
   notify: Notify;
   onHome: () => void;
   onOpenBlueprint: () => void;
-  onOpenStairs: () => void;
 }) {
   const walls = useFloorPlanStore((state) => state.walls);
   const openings = useFloorPlanStore((state) => state.openings);
   const furniture = useFloorPlanStore((state) => state.furniture);
   const furnitureScaleFactor = useFloorPlanStore((state) => state.furnitureScaleFactor);
+  const unit = useFloorPlanStore((state) => state.unit);
+  const setUnit = useFloorPlanStore((state) => state.setUnit);
   const sceneName = useFloorPlanStore((state) => state.sceneName);
   const loadScene = useFloorPlanStore((state) => state.loadScene);
   const resetScene = useFloorPlanStore((state) => state.resetScene);
@@ -831,14 +854,6 @@ function TopBar({
           <ImagePlus className="h-3.5 w-3.5" />
           <span className="hidden md:inline">Import Blueprint</span>
         </button>
-        <button
-          type="button"
-          onClick={onOpenStairs}
-          className="flex items-center gap-1.5 rounded-lg border border-accent/20 bg-accent/[0.06] px-2 py-1.5 text-[11px] font-medium text-accent transition hover:bg-accent/15"
-        >
-          <Ruler className="h-3.5 w-3.5" />
-          <span className="hidden lg:inline">Stairs &amp; Ladders</span>
-        </button>
       </div>
 
       <div className="ml-auto flex items-center gap-3">
@@ -846,6 +861,25 @@ function TopBar({
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
           {walls.length} walls · {openings.length} openings · {furniture.length} furniture
         </span>
+        <label className="flex items-center gap-1.5">
+          <span className="hidden text-[9px] uppercase tracking-wider text-slate-600 sm:inline">
+            Units
+          </span>
+          <select
+            value={unit}
+            onChange={(event) =>
+              setUnit(event.currentTarget.value as typeof unit)
+            }
+            aria-label="Plan units"
+            className="rounded-lg border border-line bg-black/25 px-2 py-1.5 text-[10px] text-slate-200 outline-none"
+          >
+            {FLOOR_PLAN_UNIT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <ViewSwitcher />
       </div>
     </header>
@@ -884,10 +918,8 @@ function Toast({ toast }: { toast: ToastState }) {
 }
 
 export function AppShell({
-  onOpenStairs,
   onHome,
 }: {
-  onOpenStairs: () => void;
   onHome: () => void;
 }) {
   const activeView = useFloorPlanStore((state) => state.activeView);
@@ -1000,7 +1032,6 @@ export function AppShell({
         notify={notify}
         onHome={onHome}
         onOpenBlueprint={openImporter}
-        onOpenStairs={onOpenStairs}
       />
       <div className="flex min-h-0 flex-1">
         <Sidebar />

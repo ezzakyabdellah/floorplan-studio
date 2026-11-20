@@ -71,6 +71,18 @@
     margin: 0;
   }
 
+  /* Native select popups ignore the translucent control background, so give
+     the option list an explicit dark surface and readable text. */
+  select {
+    color-scheme: dark;
+  }
+
+  select option,
+  select optgroup {
+    background-color: #0d1117;
+    color: #e2e8f0;
+  }
+
   input[type="range"] {
     appearance: none;
     height: 4px;

@@ -54,6 +54,9 @@ export type Furniture = {
 
 export type ActiveView = "2d" | "3d";
 
+/** Display/input unit for the floor plan. Stored geometry remains in feet. */
+export type FloorPlanUnit = "ft" | "in" | "mm" | "cm" | "m";
+
 export type ActiveTool = "select" | "wall" | "door" | "window";
 
 export type SceneFile = {

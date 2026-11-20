@@ -15,7 +15,13 @@ import {
   calculateBalusterSpacing,
   calculateRailingRun,
 } from "../../engineering/railingCalculations";
-import { formatLength } from "../../engineering/units";
+import {
+  displayLength,
+  displayLengthStep,
+  formatLength,
+  lengthUnitLabel,
+  projectLengthFromDisplay,
+} from "../../engineering/units";
 import type { OllamaStatus } from "../../services/localAiService";
 import type { ProjectState } from "../../engineering/types";
 import { cn } from "../../utils/cn";
@@ -35,6 +41,7 @@ function currentProject(): ProjectState {
   const {
     projectType,
     units,
+    displayUnit,
     stairParams,
     ladderParams,
     calculatedMetrics,
@@ -42,6 +49,7 @@ function currentProject(): ProjectState {
   return {
     projectType,
     units,
+    displayUnit,
     stairParams,
     ladderParams,
     calculatedMetrics,
@@ -61,7 +69,13 @@ function BalusterSpacingCalculator({ project }: { project: ProjectState }) {
     (state) => state.updateDesignParameters,
   );
   const units = project.units;
-  const unitLabel = units === "imperial" ? "in" : "mm";
+  const displayUnit = project.displayUnit;
+  const unitLabel = lengthUnitLabel(units, displayUnit);
+  const lengthStep = displayLengthStep(units, displayUnit);
+  const inputLength = (value: number) =>
+    Number(displayLength(value, units, displayUnit).toFixed(4));
+  const outputLength = (value: number) =>
+    projectLengthFromDisplay(value, units, displayUnit);
   const calculatedRun = calculateRailingRun(project.stairParams, units);
   const railRun = project.stairParams.railingRunOverride ?? calculatedRun;
   const calculation = useMemo(() => {
@@ -154,13 +168,15 @@ function BalusterSpacingCalculator({ project }: { project: ProjectState }) {
           </span>
           <input
             type="number"
-            min={units === "imperial" ? 0.0625 : 1}
-            max={units === "imperial" ? 100_000 : 2_540_000}
-            step={units === "imperial" ? 0.0625 : 1}
-            value={railRun}
+            min={inputLength(units === "imperial" ? 1 / 16 : 1)}
+            max={inputLength(units === "imperial" ? 100_000 : 2_540_000)}
+            step={lengthStep}
+            value={inputLength(railRun)}
             onChange={(event) => {
               const value = event.currentTarget.valueAsNumber;
-              if (Number.isFinite(value) && value > 0) updateLength(value);
+              if (Number.isFinite(value) && value > 0) {
+                updateLength(outputLength(value));
+              }
             }}
             aria-label="Railing run length"
             className="w-full rounded-lg border border-line bg-black/25 px-2 py-1.5 font-mono text-[10px] text-slate-100 outline-none focus:border-accent/50"
@@ -172,12 +188,14 @@ function BalusterSpacingCalculator({ project }: { project: ProjectState }) {
           </span>
           <input
             type="number"
-            min={units === "imperial" ? 0.0625 : 1}
-            step={units === "imperial" ? 0.0625 : 1}
-            value={project.stairParams.balusterSpacingMax}
+            min={inputLength(units === "imperial" ? 1 / 16 : 1)}
+            step={lengthStep}
+            value={inputLength(project.stairParams.balusterSpacingMax)}
             onChange={(event) => {
               const value = event.currentTarget.valueAsNumber;
-              if (Number.isFinite(value) && value > 0) updateGap(value);
+              if (Number.isFinite(value) && value > 0) {
+                updateGap(outputLength(value));
+              }
             }}
             aria-label="Maximum baluster clear gap"
             className="w-full rounded-lg border border-line bg-black/25 px-2 py-1.5 font-mono text-[10px] text-slate-100 outline-none focus:border-accent/50"
@@ -189,12 +207,14 @@ function BalusterSpacingCalculator({ project }: { project: ProjectState }) {
           </span>
           <input
             type="number"
-            min={units === "imperial" ? 0.0625 : 1}
-            step={units === "imperial" ? 0.0625 : 1}
-            value={project.stairParams.balusterThickness}
+            min={inputLength(units === "imperial" ? 1 / 16 : 1)}
+            step={lengthStep}
+            value={inputLength(project.stairParams.balusterThickness)}
             onChange={(event) => {
               const value = event.currentTarget.valueAsNumber;
-              if (Number.isFinite(value) && value > 0) updateBalusterWidth(value);
+              if (Number.isFinite(value) && value > 0) {
+                updateBalusterWidth(outputLength(value));
+              }
             }}
             aria-label="Baluster width"
             className="w-full rounded-lg border border-line bg-black/25 px-2 py-1.5 font-mono text-[10px] text-slate-100 outline-none focus:border-accent/50"
@@ -217,7 +237,7 @@ function BalusterSpacingCalculator({ project }: { project: ProjectState }) {
               viewBox="0 0 400 104"
               className="block h-auto w-full"
               role="img"
-              aria-label={`${layout.balusterCount} evenly distributed balusters; ${formatLength(layout.clearGap, units)} clear gaps`}
+              aria-label={`${layout.balusterCount} evenly distributed balusters; ${formatLength(layout.clearGap, units, displayUnit)} clear gaps`}
             >
               <line x1={startX} y1="28" x2={endX} y2="28" stroke="#17212b" strokeWidth="4" />
               <line x1={startX} y1="68" x2={endX} y2="68" stroke="#17212b" strokeWidth="3" />
@@ -237,12 +257,12 @@ function BalusterSpacingCalculator({ project }: { project: ProjectState }) {
               <line x1={startX} y1="83" x2={startX} y2="91" stroke="#0e7490" strokeWidth="1" />
               <line x1={endX} y1="83" x2={endX} y2="91" stroke="#0e7490" strokeWidth="1" />
               <text x="200" y="101" fill="#0e7490" fontSize="9" textAnchor="middle">
-                {formatLength(railRun, units)} rail · {formatLength(layout.clearGap, units)} equal clear gaps
+                {formatLength(railRun, units, displayUnit)} rail · {formatLength(layout.clearGap, units, displayUnit)} equal clear gaps
               </text>
             </svg>
           </div>
           <p className="mt-2 text-[9px] leading-relaxed text-slate-500">
-            Calculated clear gap: {formatLength(layout.clearGap, units)} · effective maximum: {formatLength(layout.maxAllowedGap, units)}
+            Calculated clear gap: {formatLength(layout.clearGap, units, displayUnit)} · effective maximum: {formatLength(layout.maxAllowedGap, units, displayUnit)}
             {project.stairParams.balusterSpacingMax > layout.maxAllowedGap
               ? " (safety cap applied)"
               : ""}
@@ -263,6 +283,7 @@ export function WorkshopDrawings({ status, model }: Props) {
     useShallow((state) => ({
       projectType: state.projectType,
       units: state.units,
+      displayUnit: state.displayUnit,
       stairParams: state.stairParams,
       ladderParams: state.ladderParams,
       calculatedMetrics: state.calculatedMetrics,

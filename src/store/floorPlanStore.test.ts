@@ -50,3 +50,14 @@ describe("furniture scale setting", () => {
     expect(furniture.height).toBeCloseTo(1.8);
   });
 });
+
+describe("floor plan display units", () => {
+  it("changes the display unit without modifying stored geometry", () => {
+    const before = useFloorPlanStore.getState().walls;
+    useFloorPlanStore.getState().setUnit("m");
+    expect(useFloorPlanStore.getState().unit).toBe("m");
+    expect(useFloorPlanStore.getState().walls).toBe(before);
+    useFloorPlanStore.getState().setUnit("ft");
+    expect(useFloorPlanStore.getState().unit).toBe("ft");
+  });
+});

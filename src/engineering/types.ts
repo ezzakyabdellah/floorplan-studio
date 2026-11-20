@@ -1,4 +1,11 @@
 export type EngineeringUnits = "imperial" | "metric";
+
+/**
+ * Unit used to display and accept lengths in the UI. Stored dimensions always
+ * stay in inches (imperial) or millimetres (metric); metric lengths can be
+ * presented in millimetres, centimetres, or metres.
+ */
+export type LengthUnit = "in" | "mm" | "cm" | "m";
 export type ProjectType = "staircase" | "ladder";
 export type StairStyle = "straight" | "l-shaped" | "u-shaped" | "spiral";
 export type LadderType = "extension" | "single" | "step";
@@ -56,6 +63,8 @@ export type CalculatedMetrics = {
 export type ProjectState = {
   projectType: ProjectType;
   units: EngineeringUnits;
+  /** Display-only preference; stored lengths remain in `units`. */
+  displayUnit: LengthUnit;
   stairParams: StairParameters;
   ladderParams: LadderParameters;
   calculatedMetrics: CalculatedMetrics;
@@ -64,6 +73,7 @@ export type ProjectState = {
 export type ProjectParametersPatch = {
   projectType?: ProjectType;
   units?: EngineeringUnits;
+  displayUnit?: LengthUnit;
   stairParams?: Partial<StairParameters>;
   ladderParams?: Partial<LadderParameters>;
 };

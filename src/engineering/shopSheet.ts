@@ -371,7 +371,7 @@ function addRailingIllustration(
     commands,
     startX + totalScreenLength / 2,
     startY - (stairParams.totalRise * scale) - railHeight - 8,
-    `RAILING · ${calculatedMetrics.balusterCount} BALUSTERS · ${formatLength(calculatedMetrics.balusterClearGap, units)} CLEAR`,
+    `RAILING · ${calculatedMetrics.balusterCount} BALUSTERS · ${formatLength(calculatedMetrics.balusterClearGap, units, project.displayUnit)} CLEAR`,
     8.5,
     ACCENT,
     "bold",
@@ -460,15 +460,15 @@ function addSideElevation(
     left + run,
     bottom + 22,
     stairParams.style === "spiral"
-      ? `DEVELOPED WALKLINE ${formatLength(geometry.totalWalkingRun, units)}`
-      : `TREAD RUN ${formatLength(stairParams.totalRun, units)}${hasLanding ? ` + LANDING ${formatLength(landing, units)}` : ""}`,
+      ? `DEVELOPED WALKLINE ${formatLength(geometry.totalWalkingRun, units, project.displayUnit)}`
+      : `TREAD RUN ${formatLength(stairParams.totalRun, units, project.displayUnit)}${hasLanding ? ` + LANDING ${formatLength(landing, units, project.displayUnit)}` : ""}`,
   );
   verticalDimension(
     commands,
     left - 22,
     bottom,
     bottom - rise,
-    `RISE ${formatLength(stairParams.totalRise, units)}`,
+    `RISE ${formatLength(stairParams.totalRise, units, project.displayUnit)}`,
   );
   text(
     commands,
@@ -484,7 +484,7 @@ function addSideElevation(
     commands,
     x + 16,
     y + height - 12,
-    `AVG RISE ${geometry.unitRiseExact.toFixed(units === "imperial" ? 3 : 1)} ${units === "imperial" ? "in" : "mm"}  ·  ${stairParams.style === "spiral" ? "WALKLINE" : "TREAD"} ${formatLength(geometry.unitRun, units)}`,
+    `AVG RISE ${formatLength(geometry.unitRiseExact, units, project.displayUnit)}  ·  ${stairParams.style === "spiral" ? "WALKLINE" : "TREAD"} ${formatLength(geometry.unitRun, units, project.displayUnit)}`,
     10,
     MUTED,
   );
@@ -567,7 +567,7 @@ function addTopPlan(
       commands,
       centerX,
       centerY + 4,
-      `R ${formatLength(stairParams.spiralRadius, units)}`,
+      `R ${formatLength(stairParams.spiralRadius, units, project.displayUnit)}`,
       10,
       ACCENT,
       "bold",
@@ -637,14 +637,14 @@ function addTopPlan(
       left,
       left + envelopeWidth * scale,
       top + envelopeHeight * scale + 18,
-      `X ENVELOPE ${formatLength(envelopeWidth, units)}`,
+      `X ENVELOPE ${formatLength(envelopeWidth, units, project.displayUnit)}`,
     );
     verticalDimension(
       commands,
       left + envelopeWidth * scale + 18,
       top,
       top + envelopeHeight * scale,
-      `Y ${formatLength(envelopeHeight, units)}`,
+      `Y ${formatLength(envelopeHeight, units, project.displayUnit)}`,
     );
     text(commands, left + firstRun / 2, top + flightWidth / 2 + 4, "FLIGHT 1", 9, MUTED, "bold", "middle");
     text(commands, landingX + landingRun / 2, top + flightWidth / 2 + 4, "LANDING", 9, ACCENT, "bold", "middle");
@@ -709,7 +709,7 @@ function addTopPlan(
       left,
       left + envelopeWidth * scale,
       top + envelopeHeight * scale + 18,
-      `WIDTH ${formatLength(envelopeWidth, units)}`,
+      `WIDTH ${formatLength(envelopeWidth, units, project.displayUnit)}`,
     );
     text(commands, left + envelopeWidth * scale / 2, top + landingDepth / 2 + 3, "LANDING", 9, ACCENT, "bold", "middle");
     text(commands, left + flightWidth / 2, top + landingDepth + firstRun / 2, "FLIGHT 1", 9, MUTED, "bold", "middle");
@@ -744,14 +744,14 @@ function addTopPlan(
     left,
     left + runPx,
     top + widthPx + 20,
-    `RUN ${formatLength(run, units)}`,
+    `RUN ${formatLength(run, units, project.displayUnit)}`,
   );
   verticalDimension(
     commands,
     left + runPx + 19,
     top,
     top + widthPx,
-    `WIDTH ${formatLength(stairParams.width, units)}`,
+    `WIDTH ${formatLength(stairParams.width, units, project.displayUnit)}`,
   );
   text(commands, left + runPx / 2, top + widthPx / 2 + 4, "STAIR FLIGHT", 11, MUTED, "bold", "middle");
 }
@@ -799,13 +799,13 @@ function addFrontElevation(
     left,
     left + stairWidth,
     bottom + 15,
-    `WIDTH ${formatLength(stairParams.width, units)}`,
+    `WIDTH ${formatLength(stairParams.width, units, project.displayUnit)}`,
   );
   text(
     commands,
     x + 16,
     y + height - 38,
-    `RAILING ${formatLength(balusterRailRun, units)} · ${balusterCount} BALUSTERS · ${formatLength(balusterClearGap, units)} CLEAR`,
+    `RAILING ${formatLength(balusterRailRun, units, project.displayUnit)} · ${balusterCount} BALUSTERS · ${formatLength(balusterClearGap, units, project.displayUnit)} CLEAR`,
     8,
     ACCENT,
     "bold",
@@ -891,16 +891,16 @@ function addStringerNotch(
     left + run,
     bottom + 17,
     stairParams.style === "spiral"
-      ? `WALKLINE ${formatLength(geometry.totalWalkingRun, units)}`
-      : `RUN ${formatLength(stairParams.totalRun, units)}${hasLanding ? ` + LANDING ${formatLength(landing, units)}` : ""}`,
+      ? `WALKLINE ${formatLength(geometry.totalWalkingRun, units, project.displayUnit)}`
+      : `RUN ${formatLength(stairParams.totalRun, units, project.displayUnit)}${hasLanding ? ` + LANDING ${formatLength(landing, units, project.displayUnit)}` : ""}`,
   );
   text(
     commands,
     x + 16,
     y + height - 10,
     stairParams.style === "spiral"
-      ? `${geometry.treadCount} radial treads · helix development ${formatLength(geometry.stringerLength, units)}`
-      : `${geometry.treadCount} tread notches · ${geometry.stepCount} risers · stringer line ${formatLength(geometry.stringerLength, units)}`,
+      ? `${geometry.treadCount} radial treads · helix development ${formatLength(geometry.stringerLength, units, project.displayUnit)}`
+      : `${geometry.treadCount} tread notches · ${geometry.stepCount} risers · stringer line ${formatLength(geometry.stringerLength, units, project.displayUnit)}`,
     9,
     MUTED,
   );
@@ -960,14 +960,14 @@ function addLadderAngle(
     baseX,
     wallX,
     floorY + 17,
-    `SETBACK ${formatLength(geometry.baseSetback, units)}`,
+    `SETBACK ${formatLength(geometry.baseSetback, units, project.displayUnit)}`,
   );
   verticalDimension(
     commands,
     wallX + 18,
     floorY,
     topY,
-    `HEIGHT ${formatLength(ladderParams.workingHeight, units)}`,
+    `HEIGHT ${formatLength(ladderParams.workingHeight, units, project.displayUnit)}`,
   );
   const angle = Math.atan2(vertical, setback || 0.001);
   const arcRadius = 25;
@@ -985,7 +985,7 @@ function addLadderAngle(
     commands,
     x + 18,
     y + height - 10,
-    `Required ladder length ${formatLength(geometry.requiredLength, units)} · overlap ${geometry.minimumOverlap === null ? "manufacturer instructions" : formatLength(geometry.minimumOverlap, units)}`,
+    `Required ladder length ${formatLength(geometry.requiredLength, units, project.displayUnit)} · overlap ${geometry.minimumOverlap === null ? "manufacturer instructions" : formatLength(geometry.minimumOverlap, units, project.displayUnit)}`,
     9,
     MUTED,
   );
@@ -1223,17 +1223,17 @@ export function defaultWorkshopNotes(
     const geometry = calculateStairGeometry(stairParams, units);
     return {
       assemblyNotes: [
-        `Verify the ${formatLength(stairParams.totalRise, units)} floor-to-floor rise and ${formatLength(stairParams.totalRun, units)} aggregate run at the site before laying out.`,
+        `Verify the ${formatLength(stairParams.totalRise, units, project.displayUnit)} floor-to-floor rise and ${formatLength(stairParams.totalRun, units, project.displayUnit)} aggregate run at the site before laying out.`,
         `Lay out ${geometry.stepCount} equal risers and ${geometry.treadCount} treads; use the side elevation and notch profile as a dimension reference.`,
         `Confirm stringer bearing, attachment, lumber grade, and handrail/guard details with the approved plan and local authority.`,
         "Dry-fit one stringer and verify level treads, plumb risers, and top/bottom bearing before cutting the remaining stock.",
       ],
       cuttingInstructions: [
-        `Mark ${geometry.stepCount} riser positions over the full rise; average rise is ${geometry.unitRiseExact.toFixed(units === "imperial" ? 3 : 1)} ${units === "imperial" ? "in" : "mm"}.`,
-        `Lay out ${geometry.treadCount} tread notches using the ${formatLength(geometry.unitRun, units)} unit run and ${geometry.pitchAngleDegrees}° pitch.`,
-        `Distribute ${project.calculatedMetrics.balusterCount} balusters evenly over the railing run; configured maximum is ${formatLength(stairParams.balusterSpacingMax, units)}, rule cap is ${formatLength(maximumGuardOpening(units), units)}, calculated gap is ${formatLength(project.calculatedMetrics.balusterClearGap, units)}.`,
-        `Allow extra stringer stock for end cuts and bearing; the ${formatLength(geometry.stringerLength, units)} stringer line is a geometric reference, not a final blank length.`,
-        `Prepare ${geometry.treadCount} tread blanks to the project width of ${formatLength(stairParams.width, units)}; confirm overhang and finish dimensions before cutting.`,
+        `Mark ${geometry.stepCount} riser positions over the full rise; average rise is ${formatLength(geometry.unitRiseExact, units, project.displayUnit)}.`,
+        `Lay out ${geometry.treadCount} tread notches using the ${formatLength(geometry.unitRun, units, project.displayUnit)} unit run and ${geometry.pitchAngleDegrees}° pitch.`,
+        `Distribute ${project.calculatedMetrics.balusterCount} balusters evenly over the railing run; configured maximum is ${formatLength(stairParams.balusterSpacingMax, units, project.displayUnit)}, rule cap is ${formatLength(maximumGuardOpening(units), units, project.displayUnit)}, calculated gap is ${formatLength(project.calculatedMetrics.balusterClearGap, units, project.displayUnit)}.`,
+        `Allow extra stringer stock for end cuts and bearing; the ${formatLength(geometry.stringerLength, units, project.displayUnit)} stringer line is a geometric reference, not a final blank length.`,
+        `Prepare ${geometry.treadCount} tread blanks to the project width of ${formatLength(stairParams.width, units, project.displayUnit)}; confirm overhang and finish dimensions before cutting.`,
       ],
     };
   }
@@ -1246,16 +1246,16 @@ export function defaultWorkshopNotes(
   return {
     assemblyNotes: [
       `Set the ${ladderParams.ladderType} ladder on a firm, stable ${ladderParams.surfaceType} surface and inspect rails, feet, locks, and labels.`,
-      `For leaning ladders, set the base ${formatLength(ladder.baseSetback, units)} from the support point (1:4 guidance); this does not apply to a step ladder.`,
+      `For leaning ladders, set the base ${formatLength(ladder.baseSetback, units, project.displayUnit)} from the support point (1:4 guidance); this does not apply to a step ladder.`,
       "Secure the ladder against movement and follow the ladder manufacturer's instructions for load rating and use.",
       "Keep access clear and maintain three-point contact while climbing; do not use the schematic as a substitute for a site inspection.",
     ],
     cuttingInstructions: [
-      `Required ladder length is approximately ${formatLength(ladder.requiredLength, units)} including the access extension where applicable.`,
+      `Required ladder length is approximately ${formatLength(ladder.requiredLength, units, project.displayUnit)} including the access extension where applicable.`,
       ladder.minimumOverlap === null
         ? "Use the manufacturer's extension overlap specifications for this ladder length."
-        : `Confirm at least ${formatLength(ladder.minimumOverlap, units)} overlap against the ladder label and manufacturer.`,
-      `The setup diagram uses a ${ladder.ladderAngleDegrees}° angle and ${formatLength(ladder.roofExtension, units)} access extension.`,
+        : `Confirm at least ${formatLength(ladder.minimumOverlap, units, project.displayUnit)} overlap against the ladder label and manufacturer.`,
+      `The setup diagram uses a ${ladder.ladderAngleDegrees}° angle and ${formatLength(ladder.roofExtension, units, project.displayUnit)} access extension.`,
     ],
   };
 }

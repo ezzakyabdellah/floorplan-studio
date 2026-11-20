@@ -27,11 +27,19 @@ import {
   rampSlopeFromGrade,
   rampSlopeFromRatio,
 } from "../../engineering/rampCalculations";
-import { formatLength } from "../../engineering/units";
+import {
+  displayLength,
+  displayLengthStep,
+  formatLength,
+  lengthUnitLabel,
+  lengthUnitName,
+  projectLengthFromDisplay,
+} from "../../engineering/units";
 import { useProjectStore } from "../../engineering/projectStore";
 import type {
   AuditFinding,
   EngineeringUnits,
+  LengthUnit,
   ProjectParametersPatch,
 } from "../../engineering/types";
 import { cn } from "../../utils/cn";
@@ -70,31 +78,58 @@ function NumberInput({
   label,
   value,
   unit,
+  units,
+  displayUnit,
   min = 0.01,
   step,
   onChange,
 }: {
   label: string;
   value: number;
-  unit: string;
+  unit?: string;
+  units?: EngineeringUnits;
+  displayUnit?: LengthUnit;
   min?: number;
   step?: number;
   onChange: (value: number) => void;
 }) {
+  const usesProjectLength = units !== undefined;
+  const shownUnit = usesProjectLength
+    ? lengthUnitLabel(units, displayUnit)
+    : (unit ?? "");
+  const shownValue = usesProjectLength
+    ? Number(displayLength(value, units, displayUnit).toFixed(4))
+    : value;
+  const shownMin = usesProjectLength
+    ? Number(displayLength(min, units, displayUnit).toFixed(4))
+    : min;
+  const shownStep =
+    step ??
+    (usesProjectLength
+      ? displayLengthStep(units, displayUnit)
+      : unit === "in"
+        ? 0.0625
+        : 1);
   return (
     <label className="block">
       <span className="mb-1 flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.12em] text-slate-500">
         <span>{label}</span>
-        <span className="normal-case tracking-normal">{unit}</span>
+        <span className="normal-case tracking-normal">{shownUnit}</span>
       </span>
       <input
         type="number"
-        value={value}
-        min={min}
-        step={step ?? (unit === "in" ? 0.0625 : 1)}
+        value={shownValue}
+        min={shownMin}
+        step={shownStep}
         onChange={(event) => {
           const next = event.currentTarget.valueAsNumber;
-          if (Number.isFinite(next)) onChange(next);
+          if (Number.isFinite(next)) {
+            onChange(
+              usesProjectLength
+                ? projectLengthFromDisplay(next, units, displayUnit)
+                : next,
+            );
+          }
         }}
         className="w-full rounded-lg border border-line bg-black/25 px-2.5 py-2 font-mono text-[12px] text-slate-100 outline-none transition focus:border-accent/50 focus:ring-2 focus:ring-accent/10"
       />
@@ -136,7 +171,13 @@ function Finding({ item }: { item: AuditFinding }) {
   );
 }
 
-function RampConverter({ units }: { units: EngineeringUnits }) {
+function RampConverter({
+  units,
+  displayUnit,
+}: {
+  units: EngineeringUnits;
+  displayUnit: LengthUnit;
+}) {
   const [mode, setMode] = useState<"degrees" | "grade" | "ratio">("degrees");
   const [value, setValue] = useState("4.76");
   const result = useMemo(() => {
@@ -203,7 +244,7 @@ function RampConverter({ units }: { units: EngineeringUnits }) {
       )}
       <p className="mt-2 text-[9px] leading-relaxed text-slate-600">
         {result?.citation}. Confirm applicable exceptions and adopted standards.
-        Display units: {units === "imperial" ? "inches" : "millimetres"}.
+        Display units: {lengthUnitName(units, displayUnit)}.
       </p>
     </section>
   );
@@ -215,6 +256,8 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
   >("calculator");
   const projectType = useProjectStore((state) => state.projectType);
   const units = useProjectStore((state) => state.units);
+  const displayUnit = useProjectStore((state) => state.displayUnit);
+  const setDisplayUnit = useProjectStore((state) => state.setDisplayUnit);
   const stairParams = useProjectStore((state) => state.stairParams);
   const ladderParams = useProjectStore((state) => state.ladderParams);
   const metrics = useProjectStore((state) => state.calculatedMetrics);
@@ -258,9 +301,9 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
 
   useEffect(() => {
     setReport(audit());
-  }, [audit, metrics, projectType, units, stairParams, ladderParams]);
+  }, [audit, metrics, projectType, units, displayUnit, stairParams, ladderParams]);
 
-  const unitLabel = units === "imperial" ? "in" : "mm";
+  const unitName = lengthUnitName(units, displayUnit);
 
   const applyPatch = (patch: ProjectParametersPatch) => {
     const result = updateDesignParameters(patch);
@@ -317,7 +360,7 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
       if (result.audit) setReport(result.audit);
       const responseUnits = useProjectStore.getState().units;
       setCopilotMessage(
-        `${result.response}\n\n${formatDesignPatchSummary(result.patch, responseUnits)}\n\nSource: ${result.source === "local-model" ? `${model} via local Ollama` : "offline command parser"}.`,
+        `${result.response}\n\n${formatDesignPatchSummary(result.patch, responseUnits, displayUnit)}\n\nSource: ${result.source === "local-model" ? `${model} via local Ollama` : "offline command parser"}.`,
       );
     } catch (submitError) {
       if (status?.online) {
@@ -337,7 +380,7 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
     const next = audit();
     setReport(next);
     setCopilotMessage(
-      `Deterministic audit: ${next.passCount} passed, ${next.failCount} failed, ${next.warningCount} warning${next.warningCount === 1 ? "" : "s"}. Project dimensions are in ${unitLabel}. AI does not calculate these results.`,
+      `Deterministic audit: ${next.passCount} passed, ${next.failCount} failed, ${next.warningCount} warning${next.warningCount === 1 ? "" : "s"}. Project dimensions are in ${unitName}. AI does not calculate these results.`,
     );
   };
 
@@ -363,7 +406,7 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
   };
 
   const format = (value: number | null) =>
-    value === null ? "Not measured" : formatLength(value, units);
+    value === null ? "Not measured" : formatLength(value, units, displayUnit);
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-shell text-slate-200">
@@ -425,17 +468,17 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
             {status?.online ? "Local AI connected" : "Offline-ready"}
           </span>
           <select
-            value={units}
+            value={displayUnit}
             onChange={(event) =>
-              useProjectStore
-                .getState()
-                .setUnits(event.currentTarget.value as EngineeringUnits)
+              setDisplayUnit(event.currentTarget.value as LengthUnit)
             }
             aria-label="Project units"
             className="rounded-lg border border-line bg-black/25 px-2 py-1.5 text-[10px] text-slate-200 outline-none"
           >
-            <option value="imperial">Imperial · in</option>
-            <option value="metric">Metric · mm</option>
+            <option value="in">Imperial · in</option>
+            <option value="mm">Metric · mm</option>
+            <option value="cm">Metric · cm</option>
+            <option value="m">Metric · m</option>
           </select>
         </div>
       </header>
@@ -507,30 +550,30 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
                       </select>
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                      <NumberInput label="Total rise" value={stairParams.totalRise} unit={unitLabel} onChange={(totalRise) => updateDesignParameters({ stairParams: { totalRise } })} />
+                      <NumberInput label="Total rise" value={stairParams.totalRise} units={units} displayUnit={displayUnit} onChange={(totalRise) => updateDesignParameters({ stairParams: { totalRise } })} />
                       {stairParams.style !== "spiral" ? (
-                        <NumberInput label="Total run (treads)" value={stairParams.totalRun} unit={unitLabel} onChange={(totalRun) => updateDesignParameters({ stairParams: { totalRun } })} />
+                        <NumberInput label="Total run (treads)" value={stairParams.totalRun} units={units} displayUnit={displayUnit} onChange={(totalRun) => updateDesignParameters({ stairParams: { totalRun } })} />
                       ) : (
                         <>
-                          <NumberInput label="Spiral radius" value={stairParams.spiralRadius} unit={unitLabel} onChange={(spiralRadius) => updateDesignParameters({ stairParams: { spiralRadius } })} />
+                          <NumberInput label="Spiral radius" value={stairParams.spiralRadius} units={units} displayUnit={displayUnit} onChange={(spiralRadius) => updateDesignParameters({ stairParams: { spiralRadius } })} />
                           <NumberInput label="Spiral turns" value={stairParams.spiralTurns} unit="turns" min={0.25} step={0.25} onChange={(spiralTurns) => updateDesignParameters({ stairParams: { spiralTurns } })} />
                         </>
                       )}
-                      <NumberInput label="Stair width" value={stairParams.width} unit={unitLabel} onChange={(width) => updateDesignParameters({ stairParams: { width } })} />
+                      <NumberInput label="Stair width" value={stairParams.width} units={units} displayUnit={displayUnit} onChange={(width) => updateDesignParameters({ stairParams: { width } })} />
                       {stairParams.style === "l-shaped" || stairParams.style === "u-shaped" ? (
-                        <NumberInput label="Landing length" value={stairParams.landingLength} unit={unitLabel} onChange={(landingLength) => updateDesignParameters({ stairParams: { landingLength } })} />
+                        <NumberInput label="Landing length" value={stairParams.landingLength} units={units} displayUnit={displayUnit} onChange={(landingLength) => updateDesignParameters({ stairParams: { landingLength } })} />
                       ) : null}
-                      <NumberInput label="Tread thickness" value={stairParams.treadThickness} unit={unitLabel} onChange={(treadThickness) => updateDesignParameters({ stairParams: { treadThickness } })} />
-                      <NumberInput label="Riser thickness" value={stairParams.riserThickness} unit={unitLabel} onChange={(riserThickness) => updateDesignParameters({ stairParams: { riserThickness } })} />
-                      <NumberInput label="Nosing" value={stairParams.nosing} unit={unitLabel} onChange={(nosing) => updateDesignParameters({ stairParams: { nosing } })} />
-                      <NumberInput label="Ceiling height" value={stairParams.headroomCeilingHeight} unit={unitLabel} onChange={(headroomCeilingHeight) => updateDesignParameters({ stairParams: { headroomCeilingHeight } })} />
+                      <NumberInput label="Tread thickness" value={stairParams.treadThickness} units={units} displayUnit={displayUnit} onChange={(treadThickness) => updateDesignParameters({ stairParams: { treadThickness } })} />
+                      <NumberInput label="Riser thickness" value={stairParams.riserThickness} units={units} displayUnit={displayUnit} onChange={(riserThickness) => updateDesignParameters({ stairParams: { riserThickness } })} />
+                      <NumberInput label="Nosing" value={stairParams.nosing} units={units} displayUnit={displayUnit} onChange={(nosing) => updateDesignParameters({ stairParams: { nosing } })} />
+                      <NumberInput label="Ceiling height" value={stairParams.headroomCeilingHeight} units={units} displayUnit={displayUnit} onChange={(headroomCeilingHeight) => updateDesignParameters({ stairParams: { headroomCeilingHeight } })} />
                       <NumberInput
                         label="Measured headroom"
                         value={stairParams.headroomClearance ?? 80}
-                        unit={unitLabel}
+                        units={units} displayUnit={displayUnit}
                         onChange={(headroomClearance) => updateDesignParameters({ stairParams: { headroomClearance } })}
                       />
-                      <NumberInput label="Max baluster gap" value={stairParams.balusterSpacingMax} unit={unitLabel} onChange={(balusterSpacingMax) => updateDesignParameters({ stairParams: { balusterSpacingMax } })} />
+                      <NumberInput label="Max baluster gap" value={stairParams.balusterSpacingMax} units={units} displayUnit={displayUnit} onChange={(balusterSpacingMax) => updateDesignParameters({ stairParams: { balusterSpacingMax } })} />
                     </div>
                     <p className="mt-3 rounded-lg border border-amber-500/15 bg-amber-500/[0.04] p-2.5 text-[10px] leading-relaxed text-amber-100/70">
                       Headroom is checked from the measured clearance above. Ceiling height alone cannot establish stair headroom without ceiling-location geometry.
@@ -568,7 +611,7 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
                       <NumberInput
                         label="Working height"
                         value={ladderParams.workingHeight}
-                        unit={unitLabel}
+                        units={units} displayUnit={displayUnit}
                         onChange={(workingHeight) =>
                           updateDesignParameters({ ladderParams: { workingHeight } })
                         }
@@ -636,7 +679,7 @@ export function StairLadderStudio({ onBack, backLabel = "Floor plan" }: Props) {
                   </div>
                 </div>
 
-                <RampConverter units={units} />
+                <RampConverter units={units} displayUnit={displayUnit} />
               </div>
 
               <aside className="flex min-h-[420px] flex-col rounded-xl border border-line bg-panel/70">

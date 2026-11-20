@@ -28,6 +28,36 @@ describe("unified project state", () => {
     expect(useProjectStore.getState().stairParams.totalRise).toBe(108.0625);
   });
 
+  it("switches metric display units without changing stored dimensions", () => {
+    useProjectStore.getState().setDisplayUnit("cm");
+    const centimetres = useProjectStore.getState();
+    expect(centimetres.units).toBe("metric");
+    expect(centimetres.displayUnit).toBe("cm");
+    expect(centimetres.stairParams.totalRise).toBe(2743);
+
+    useProjectStore.getState().setDisplayUnit("m");
+    const metres = useProjectStore.getState();
+    expect(metres.units).toBe("metric");
+    expect(metres.displayUnit).toBe("m");
+    expect(metres.stairParams.totalRise).toBe(2743);
+
+    useProjectStore.getState().setDisplayUnit("in");
+    const imperial = useProjectStore.getState();
+    expect(imperial.units).toBe("imperial");
+    expect(imperial.displayUnit).toBe("in");
+    expect(imperial.stairParams.totalRise).toBe(108);
+  });
+
+  it("normalizes legacy saved projects without a display unit", () => {
+    const saved = createDefaultProjectState("metric");
+    const { displayUnit: _displayUnit, ...legacy } = saved;
+    const result = useProjectStore
+      .getState()
+      .loadProjectState(legacy as typeof saved);
+    expect(result.applied).toBe(true);
+    expect(useProjectStore.getState().displayUnit).toBe("mm");
+  });
+
   it("rejects invalid user or model updates without changing state", () => {
     const before = useProjectStore.getState().stairParams.totalRise;
     const result = useProjectStore

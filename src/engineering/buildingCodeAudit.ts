@@ -4,7 +4,7 @@ import {
 } from "./railingCalculations";
 import { calculateLadderGeometry } from "./ladderCalculations";
 import { calculateStairGeometry } from "./stairCalculations";
-import { inchesToProjectUnits } from "./units";
+import { formatLength, inchesToProjectUnits } from "./units";
 import { maximumGuardOpening } from "./railingCalculations";
 import type {
   AuditFinding,
@@ -28,6 +28,7 @@ function finding(
 
 function auditStaircase(project: ProjectState): AuditFinding[] {
   const { units, stairParams } = project;
+  const format = (value: number) => formatLength(value, units, project.displayUnit);
   const metrics = calculateStairGeometry(stairParams, units);
   const minRiser = inchesToProjectUnits(4, units);
   const maxRiser = inchesToProjectUnits(7.75, units);
@@ -48,21 +49,21 @@ function auditStaircase(project: ProjectState): AuditFinding[] {
         ? "pass"
         : "fail",
       "Stair riser height",
-      `${metrics.stepCount} equal risers at ${metrics.unitRise} ${units === "imperial" ? "in" : "mm"}; allowed range is ${minRiser}–${maxRiser} ${units === "imperial" ? "in" : "mm"}.`,
+      `${metrics.stepCount} equal risers at ${format(metrics.unitRise)}; allowed range is ${format(minRiser)}–${format(maxRiser)}.`,
       "IRC R311.7.5.1 (2021): riser height is 4 in minimum and 7¾ in maximum; verify adopted edition.",
     ),
     finding(
       "stair-tread",
       metrics.unitRunExact >= minTread ? "pass" : "fail",
       "Stair tread depth",
-      `${metrics.treadCount} equal runs at ${metrics.unitRun} ${units === "imperial" ? "in" : "mm"}; the cited minimum is ${minTread} ${units === "imperial" ? "in" : "mm"}.`,
+      `${metrics.treadCount} equal runs at ${format(metrics.unitRun)}; the cited minimum is ${format(minTread)}.`,
       "IRC R311.7.5.2 (2021): minimum tread depth 10 in, measured nosing-to-nosing; verify adopted edition.",
     ),
     finding(
       "baluster-opening",
       balusters.clearGapExact <= maxOpening ? "pass" : "fail",
       "Guard opening spacing",
-      `${balusters.balusterCount} balusters produce a ${balusters.clearGap} ${units === "imperial" ? "in" : "mm"} clear gap (maximum ${maxOpening} ${units === "imperial" ? "in" : "mm"}).`,
+      `${balusters.balusterCount} balusters produce a ${format(balusters.clearGap)} clear gap (maximum ${format(maxOpening)}).`,
       `IRC R312.1.3 (2021): guard openings generally must not allow passage of a 4 in sphere; the stair-side triangular opening exception differs. Verify adopted edition.`,
     ),
   ];
@@ -83,7 +84,7 @@ function auditStaircase(project: ProjectState): AuditFinding[] {
         "stair-headroom",
         stairParams.headroomClearance >= minimumHeadroom ? "pass" : "fail",
         "Stair headroom",
-        `${stairParams.headroomClearance} ${units === "imperial" ? "in" : "mm"} measured; minimum is ${minimumHeadroom} ${units === "imperial" ? "in" : "mm"}.`,
+        `${format(stairParams.headroomClearance)} measured; minimum is ${format(minimumHeadroom)}.`,
         "IRC R311.7.2 (2021): 6 ft 8 in minimum headroom; verify measurement method and adopted edition.",
       ),
     );
@@ -105,6 +106,7 @@ function auditStaircase(project: ProjectState): AuditFinding[] {
 
 function auditLadder(project: ProjectState): AuditFinding[] {
   const { units, ladderParams } = project;
+  const format = (value: number) => formatLength(value, units, project.displayUnit);
   const metrics = calculateLadderGeometry(
     ladderParams.workingHeight,
     units,
@@ -141,7 +143,7 @@ function auditLadder(project: ProjectState): AuditFinding[] {
         : "fail",
       "Access landing extension",
       ladderParams.ladderType !== "step"
-        ? `Allow ${metrics.roofExtension} ${units === "imperial" ? "in" : "mm"} above the upper landing.`
+        ? `Allow ${format(metrics.roofExtension)} above the upper landing.`
         : "The 3 ft extension rule applies to portable ladders used to access an upper landing; this project is not an extension ladder.",
       "OSHA 29 CFR 1926.1053(b)(6): side rails extend at least 3 ft above an upper landing, unless an equivalent secure handhold is provided.",
     ),
@@ -155,7 +157,7 @@ function auditLadder(project: ProjectState): AuditFinding[] {
         "Extension ladder overlap",
         metrics.minimumOverlap === null
           ? "Required length exceeds the overlap table range; follow the ladder manufacturer's instructions."
-          : `Minimum overlap guidance for this length is ${metrics.minimumOverlap} ${units === "imperial" ? "in" : "mm"}. Confirm with the ladder label and manufacturer.`,
+          : `Minimum overlap guidance for this length is ${format(metrics.minimumOverlap)}. Confirm with the ladder label and manufacturer.`,
         "ANSI A14.2 overlap guidance (edition-specific); follow the ladder manufacturer's instructions.",
       ),
     );

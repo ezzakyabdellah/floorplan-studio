@@ -3,12 +3,13 @@ import { runBuildingCodeAudit } from "./buildingCodeAudit";
 import { calculateProjectMetrics } from "./projectCalculations";
 import { defaultLadderParameters } from "./ladderCalculations";
 import { defaultStairParameters } from "./stairCalculations";
-import { convertLength, roundLength } from "./units";
+import { convertLength, resolveLengthUnit, roundLength } from "./units";
 import type {
   AuditReport,
   CalculatedMetrics,
   EngineeringUnits,
   LadderParameters,
+  LengthUnit,
   ProjectParametersPatch,
   ProjectState,
   StairParameters,
@@ -144,10 +145,12 @@ function withMetrics(project: Omit<ProjectState, "calculatedMetrics">): ProjectS
 
 export function createDefaultProjectState(
   units: EngineeringUnits = "imperial",
+  displayUnit?: LengthUnit,
 ): ProjectState {
   return withMetrics({
     projectType: "staircase",
     units,
+    displayUnit: resolveLengthUnit(units, displayUnit),
     stairParams: defaultStairParameters(units),
     ladderParams: defaultLadderParameters(units),
   });
@@ -159,6 +162,7 @@ export type ProjectStore = ProjectState & {
   ) => { applied: boolean; error?: string };
   auditBuildingCode: () => AuditReport;
   setUnits: (units: EngineeringUnits) => void;
+  setDisplayUnit: (displayUnit: LengthUnit) => void;
   loadProjectState: (
     project: ProjectState,
   ) => { applied: boolean; error?: string };
@@ -170,7 +174,18 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   updateDesignParameters: (patch) => {
     try {
       const current = get();
-      const units = patch.units ?? current.units;
+      const requestedDisplayUnit = patch.displayUnit;
+      const units: EngineeringUnits =
+        patch.units ??
+        (requestedDisplayUnit === "in"
+          ? "imperial"
+          : requestedDisplayUnit
+            ? "metric"
+            : current.units);
+      const displayUnit = resolveLengthUnit(
+        units,
+        requestedDisplayUnit ?? current.displayUnit,
+      );
       const baseStairParams =
         units === current.units
           ? current.stairParams
@@ -182,6 +197,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       const next = withMetrics({
         projectType: patch.projectType ?? current.projectType,
         units,
+        displayUnit,
         stairParams: normalizeStairPatch(
           baseStairParams,
           patch.stairParams ?? {},
@@ -206,6 +222,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   setUnits: (units) => {
     get().updateDesignParameters({ units });
   },
+  setDisplayUnit: (displayUnit) => {
+    get().updateDesignParameters({ displayUnit });
+  },
   loadProjectState: (project) => {
     try {
       if (
@@ -219,10 +238,11 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       ) {
         throw new RangeError("Saved project has an unsupported format.");
       }
-      const defaults = createDefaultProjectState(project.units);
+      const defaults = createDefaultProjectState(project.units, project.displayUnit);
       const next = withMetrics({
         projectType: project.projectType,
         units: project.units,
+        displayUnit: defaults.displayUnit,
         stairParams: normalizeStairPatch(
           defaults.stairParams,
           project.stairParams,

@@ -16,6 +16,12 @@ import {
 } from "lucide-react";
 import { useFloorPlanStore } from "../../store/floorPlanStore";
 import {
+  displayLengthToFeet,
+  feetToDisplayLength,
+  floorPlanInputStep,
+  formatFeetNumber,
+} from "../../utils/floorPlanUnits";
+import {
   loadImageFromFile,
   renderBlueprintPreview,
   type ImageVectorOptions,
@@ -61,6 +67,7 @@ export function ImageImporter({
   onImported,
 }: ImageImporterProps) {
   const importPlan = useFloorPlanStore((state) => state.importPlan);
+  const unit = useFloorPlanStore((state) => state.unit);
 
   const [file, setFile] = useState<File | null>(null);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
@@ -555,20 +562,25 @@ export function ImageImporter({
                   <span className="mb-1 flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.12em] text-slate-500">
                     <span>Scale</span>
                     <span className="font-mono normal-case tracking-normal text-slate-400">
-                      {feetPer100Pixels} ft / 100 px
+                      {formatFeetNumber(feetPer100Pixels, unit)} {unit} / 100 px
                     </span>
                   </span>
                   <input
                     type="number"
-                    min={1}
-                    max={100}
-                    step={0.5}
-                    value={feetPer100Pixels}
+                    min={feetToDisplayLength(1, unit)}
+                    max={feetToDisplayLength(100, unit)}
+                    step={floorPlanInputStep(unit)}
+                    value={Number(
+                      feetToDisplayLength(feetPer100Pixels, unit).toFixed(3),
+                    )}
                     onChange={(event) => {
                       const next = event.currentTarget.valueAsNumber;
                       if (Number.isFinite(next)) {
                         setFeetPer100Pixels(
-                          Math.max(1, Math.min(100, next)),
+                          Math.max(
+                            1,
+                            Math.min(100, displayLengthToFeet(next, unit)),
+                          ),
                         );
                       }
                     }}

@@ -9,7 +9,6 @@ import { openSceneFile } from "./utils/fileIO";
 
 export default function App() {
   const [screen, setScreen] = useState<"home" | "floorplan" | "stairs">("home");
-  const [stairsBackTo, setStairsBackTo] = useState<"home" | "floorplan">("home");
 
   const createFloorPlan = () => {
     useFloorPlanStore.getState().resetScene();
@@ -18,7 +17,6 @@ export default function App() {
 
   const createStairProject = () => {
     useProjectStore.getState().resetProject();
-    setStairsBackTo("home");
     setScreen("stairs");
   };
 
@@ -34,7 +32,6 @@ export default function App() {
     if (!result.applied) {
       throw new Error(result.error ?? "Could not open that stair project.");
     }
-    setStairsBackTo("home");
     setScreen("stairs");
   };
 
@@ -52,8 +49,8 @@ export default function App() {
   if (screen === "stairs") {
     return (
       <StairLadderStudio
-        onBack={() => setScreen(stairsBackTo)}
-        backLabel={stairsBackTo === "home" ? "Home" : "Floor plan"}
+        onBack={() => setScreen("home")}
+        backLabel="Home"
       />
     );
   }
@@ -61,10 +58,6 @@ export default function App() {
   return (
     <AppShell
       onHome={() => setScreen("home")}
-      onOpenStairs={() => {
-        setStairsBackTo("floorplan");
-        setScreen("stairs");
-      }}
     />
   );
 }

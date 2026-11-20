@@ -5,10 +5,12 @@ import {
   feetToProjectUnits,
   formatLength,
   inchesToProjectUnits,
+  lengthUnitLabel,
 } from "./units";
 import type {
   AuditReport,
   EngineeringUnits,
+  LengthUnit,
   ProjectParametersPatch,
   ProjectState,
   StairStyle,
@@ -483,6 +485,7 @@ function constrainToExplicitRequest(
 export function formatDesignPatchSummary(
   patch: ProjectParametersPatch | undefined,
   units: EngineeringUnits,
+  displayUnit?: LengthUnit,
 ): string {
   const dimensions: string[] = [];
   const stairDimensions = [
@@ -498,16 +501,18 @@ export function formatDesignPatchSummary(
   for (const [key, label] of stairDimensions) {
     const value = patch?.stairParams?.[key];
     if (typeof value === "number") {
-      dimensions.push(`${label}: ${formatLength(value, units)}`);
+      dimensions.push(`${label}: ${formatLength(value, units, displayUnit)}`);
     }
   }
   const workingHeight = patch?.ladderParams?.workingHeight;
   if (typeof workingHeight === "number") {
-    dimensions.push(`working height: ${formatLength(workingHeight, units)}`);
+    dimensions.push(
+      `working height: ${formatLength(workingHeight, units, displayUnit)}`,
+    );
   }
   return dimensions.length > 0
     ? `Updated ${dimensions.join("; ")}.`
-    : `Project dimensions are in ${units === "metric" ? "mm" : "in"}.`;
+    : `Project dimensions are in ${lengthUnitLabel(units, displayUnit)}.`;
 }
 
 export async function runOfflineDesignRequest(

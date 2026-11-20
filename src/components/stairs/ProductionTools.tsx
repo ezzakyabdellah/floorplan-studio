@@ -89,9 +89,11 @@ function PanelTitle({
 function MaterialTable({
   lines,
   units,
+  displayUnit,
 }: {
   lines: MaterialLine[];
   units: ProjectState["units"];
+  displayUnit: ProjectState["displayUnit"];
 }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-line/70">
@@ -115,7 +117,7 @@ function MaterialTable({
                 {line.quantity} {line.unit}
               </td>
               <td className="px-3 py-2 font-mono text-slate-300">
-                {line.cutLength === null ? "—" : formatLength(line.cutLength, units)}
+                {line.cutLength === null ? "—" : formatLength(line.cutLength, units, displayUnit)}
               </td>
               <td className="px-3 py-2 text-slate-400">{line.stockProfile ?? "—"}</td>
               <td className="max-w-xs px-3 py-2 leading-relaxed text-slate-500">
@@ -137,7 +139,7 @@ function CutPlan({ project, lines }: { project: ProjectState; lines: MaterialLin
         <div>
           <h3 className="text-[11px] font-semibold text-slate-200">Stock cutting plan</h3>
           <p className="mt-1 text-[9px] text-slate-500">
-            Best-fit decreasing · kerf {formatLength(result.kerf, project.units)} per cut
+            Best-fit decreasing · kerf {formatLength(result.kerf, project.units, project.displayUnit)} per cut
           </p>
         </div>
         <div className="text-right">
@@ -145,8 +147,8 @@ function CutPlan({ project, lines }: { project: ProjectState; lines: MaterialLin
             {result.totalWastePercent.toFixed(1)}% waste
           </p>
           <p className="text-[9px] text-slate-500">
-            {formatLength(result.totalStock, project.units)} stock ·{" "}
-            {formatLength(result.totalCut, project.units)} cut
+            {formatLength(result.totalStock, project.units, project.displayUnit)} stock ·{" "}
+            {formatLength(result.totalCut, project.units, project.displayUnit)} cut
           </p>
         </div>
       </div>
@@ -169,7 +171,7 @@ function CutPlan({ project, lines }: { project: ProjectState; lines: MaterialLin
                     {pattern.cuts.map((cut, cutIndex) => (
                       <div
                         key={`${cut.label}-${cutIndex}`}
-                        title={`${cut.label}: ${formatLength(cut.length, project.units)}`}
+                        title={`${cut.label}: ${formatLength(cut.length, project.units, project.displayUnit)}`}
                         className={cn(
                           "flex min-w-0 items-center justify-center overflow-hidden border-r border-black/30 px-0.5 text-[8px] text-slate-950",
                           ["bg-cyan-300", "bg-emerald-300", "bg-amber-300", "bg-violet-300"][cutIndex % 4],
@@ -181,11 +183,11 @@ function CutPlan({ project, lines }: { project: ProjectState; lines: MaterialLin
                     ))}
                     <div
                       className="h-full min-w-0 flex-1 bg-slate-700/80"
-                      title={`Offcut and kerf: ${formatLength(pattern.offcut + pattern.kerfWaste, project.units)}`}
+                      title={`Offcut and kerf: ${formatLength(pattern.offcut + pattern.kerfWaste, project.units, project.displayUnit)}`}
                     />
                   </div>
                   <span className="w-20 shrink-0 text-right font-mono text-[8px] text-slate-500">
-                    {formatLength(pattern.stockLength, project.units)}
+                    {formatLength(pattern.stockLength, project.units, project.displayUnit)}
                   </span>
                 </div>
               ))}
@@ -472,7 +474,7 @@ function ProjectLibraryPanel({
   };
 
   const startNew = () => {
-    loadProject(createDefaultProjectState(project.units));
+    loadProject(createDefaultProjectState(project.units, project.displayUnit));
     setActiveId(null);
     setProjectName("Untitled project");
     onProjectName("Untitled project");
@@ -596,6 +598,7 @@ export function ProductionTools({ status, model }: Props) {
   const selected = useProjectStore(useShallow((state) => ({
     projectType: state.projectType,
     units: state.units,
+    displayUnit: state.displayUnit,
     stairParams: state.stairParams,
     ladderParams: state.ladderParams,
     calculatedMetrics: state.calculatedMetrics,
@@ -685,7 +688,7 @@ export function ProductionTools({ status, model }: Props) {
               <button type="button" disabled={exportBusy} onClick={() => void exportFile("stairs-ladders-bom.csv", "csv", materialManifestCsv(materials))} className={buttonClass}>
                 <Download className="h-3.5 w-3.5" /> BOM CSV
               </button>
-              <button type="button" disabled={exportBusy} onClick={() => void exportFile("stairs-ladders-cut-plan.csv", "csv", cutOptimizationCsv(optimizeCutList(project, materials), project.units))} className={buttonClass}>
+              <button type="button" disabled={exportBusy} onClick={() => void exportFile("stairs-ladders-cut-plan.csv", "csv", cutOptimizationCsv(optimizeCutList(project, materials), project))} className={buttonClass}>
                 <Download className="h-3.5 w-3.5" /> Cut-plan CSV
               </button>
               <button type="button" disabled={exportBusy} onClick={() => void exportFile("stairs-ladders.dxf", "dxf", buildDxf(project))} className={buttonClass}>
@@ -696,7 +699,7 @@ export function ProductionTools({ status, model }: Props) {
               </button>
               {exportBusy ? <span className="self-center text-[9px] text-slate-500">Preparing export…</span> : null}
             </div>
-            <MaterialTable lines={materials} units={project.units} />
+            <MaterialTable lines={materials} units={project.units} displayUnit={project.displayUnit} />
             <CutPlan project={project} lines={materials} />
             <div className="rounded-lg border border-amber-500/15 bg-amber-500/[0.04] p-2.5 text-[9px] leading-relaxed text-amber-100/70">
               CAD output is schematic fabrication geometry, not a construction drawing or structural design. STL is a scale model in {project.units === "imperial" ? "inches" : "millimetres"} (units are not embedded in STL). DXF uses {project.units === "imperial" ? "inches" : "millimetres"}.

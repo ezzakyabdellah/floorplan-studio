@@ -837,6 +837,7 @@ export function Stair3DViewport() {
     useShallow((state) => ({
       projectType: state.projectType,
       units: state.units,
+      displayUnit: state.displayUnit,
       stairParams: state.stairParams,
       ladderParams: state.ladderParams,
       calculatedMetrics: state.calculatedMetrics,
@@ -942,7 +943,7 @@ export function Stair3DViewport() {
   const headroomText =
     project.stairParams.headroomClearance === null
       ? "Not measured"
-      : formatLength(project.stairParams.headroomClearance, project.units);
+      : formatLength(project.stairParams.headroomClearance, project.units, project.displayUnit);
   const headroomState =
     project.stairParams.headroomClearance === null
       ? "unknown"
@@ -1065,7 +1066,7 @@ export function Stair3DViewport() {
               <Box className="h-3 w-3 text-accent" />
               {project.projectType === "staircase"
                 ? `${project.stairParams.style} stair · ${project.calculatedMetrics.stepCount} risers`
-                : `${project.ladderParams.ladderType} ladder · ${formatLength(project.ladderParams.workingHeight, project.units)}`}
+                : `${project.ladderParams.ladderType} ladder · ${formatLength(project.ladderParams.workingHeight, project.units, project.displayUnit)}`}
             </div>
             <p className="mt-1">Drag to orbit · scroll to zoom · changes update live</p>
           </div>
@@ -1268,8 +1269,8 @@ export function Stair3DViewport() {
               Parametric model notes
             </div>
             {project.projectType === "staircase"
-              ? `${project.stairParams.style} stair · ${project.calculatedMetrics.stepCount} risers · ${formatLength(project.stairParams.width, project.units)} wide`
-              : `${project.ladderParams.ladderType} ladder · ${formatLength(project.ladderParams.workingHeight, project.units)} working height`}
+              ? `${project.stairParams.style} stair · ${project.calculatedMetrics.stepCount} risers · ${formatLength(project.stairParams.width, project.units, project.displayUnit)} wide`
+              : `${project.ladderParams.ladderType} ladder · ${formatLength(project.ladderParams.workingHeight, project.units, project.displayUnit)} working height`}
             <br />
             Mesh dimensions update directly from ProjectState. Schematic model is not a structural design.
           </section>

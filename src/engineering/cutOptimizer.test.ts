@@ -25,7 +25,7 @@ describe("deterministic stock cut optimizer", () => {
     const project = createDefaultProjectState();
     const lines = buildMaterialManifest(project);
     const result = optimizeCutList(project, lines);
-    const csv = cutOptimizationCsv(result, project.units);
+    const csv = cutOptimizationCsv(result, project);
     expect(result.kerf).toBeGreaterThan(0);
     expect(csv).toContain("Stock profile");
     expect(csv).toContain("Tread blanks");
