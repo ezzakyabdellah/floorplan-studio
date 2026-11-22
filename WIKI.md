@@ -88,10 +88,14 @@ Provider choice and model details are documented in
 
 ![Stair and ladder design studio](docs/screenshots/05-stair-studio.png)
 
+![Parametric 3D staircase model](docs/screenshots/06-stair-3d.png)
+
 The stair studio provides parametric rise/run design, headroom checks, baluster
 spacing, 3D previews, and SVG/PDF shop-sheet export. Use the tabs in the studio
 to move between design inputs, the 3D model, the workshop drawings, and
-production tools.
+production tools. The **3D model** tab renders the live staircase geometry as an
+orbitable or walkthrough model, with toggles for treads, stringers, and
+rails/rungs.
 
 ## Projects and files
 

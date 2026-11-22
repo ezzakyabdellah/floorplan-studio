@@ -16,9 +16,9 @@
 | --- | --- |
 | ![3D floor plan in sunny daylight](docs/screenshots/03-floorplan-3d-sunny.png) | ![3D floor plan in night lighting](docs/screenshots/04-floorplan-3d-night.png) |
 
-| Stair & ladder studio |
-| --- |
-| ![Stair and ladder design studio](docs/screenshots/05-stair-studio.png) |
+| Stair & ladder studio | Stair 3D model |
+| --- | --- |
+| ![Stair and ladder design studio](docs/screenshots/05-stair-studio.png) | ![Parametric 3D staircase model](docs/screenshots/06-stair-3d.png) |
 
 See [WIKI.md](WIKI.md) for a guided tour of these screens.
 
