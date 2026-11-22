@@ -23,6 +23,14 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Measure TypeScript coverage
+        run: |
+          npm run test:coverage
+          node -e "const fs=require('fs'); const s=require('./coverage/coverage-summary.json'); const pct=s.total.lines.pct; fs.mkdirSync('./metrics',{recursive:true}); fs.writeFileSync('./metrics/frontend-coverage.json', JSON.stringify({value:pct})); console.log('TypeScript line coverage: ' + pct + '%');"
+
       - name: Measure code duplication
         run: |
           npx --yes jscpd@5.4.3 src src-tauri/src \
@@ -71,6 +79,7 @@ jobs:
           name: quality-metrics
           path: |
             metrics/
+            coverage/coverage-summary.json
             jscpd-report/
             src-tauri/cov.json
           retention-days: 3
@@ -110,6 +119,7 @@ jobs:
           node <<'NODE'
           const fs = require("fs");
           const coverage = require("./metrics/coverage.json").value;
+          const frontendCoverage = require("./metrics/frontend-coverage.json").value;
           const duplication = require("./metrics/duplication.json").value;
 
           function coverageColor(value) {
@@ -138,6 +148,16 @@ jobs:
           );
 
           fs.writeFileSync(
+            "badges/frontend-coverage.json",
+            JSON.stringify({
+              schemaVersion: 1,
+              label: "TypeScript Coverage",
+              message: `${frontendCoverage}%`,
+              color: coverageColor(frontendCoverage),
+            }) + "\n",
+          );
+
+          fs.writeFileSync(
             "badges/duplication.json",
             JSON.stringify({
               schemaVersion: 1,
@@ -147,7 +167,7 @@ jobs:
             }) + "\n",
           );
 
-          console.log("Wrote badges/coverage.json and badges/duplication.json");
+          console.log("Wrote badges/coverage.json, badges/frontend-coverage.json and badges/duplication.json");
           NODE
 
       - name: Publish badges branch

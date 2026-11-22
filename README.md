@@ -4,6 +4,7 @@
 [![CodeQL](https://github.com/ezzakyabdellah/floorplan-studio/actions/workflows/codeql.yml/badge.svg)](https://github.com/ezzakyabdellah/floorplan-studio/actions/workflows/codeql.yml)
 [![Coverage & Duplication](https://github.com/ezzakyabdellah/floorplan-studio/actions/workflows/coverage-and-duplication.yml/badge.svg)](https://github.com/ezzakyabdellah/floorplan-studio/actions/workflows/coverage-and-duplication.yml)
 [![Rust Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ezzakyabdellah/floorplan-studio/badges/coverage.json)](https://github.com/ezzakyabdellah/floorplan-studio/tree/badges)
+[![TypeScript Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ezzakyabdellah/floorplan-studio/badges/frontend-coverage.json)](https://github.com/ezzakyabdellah/floorplan-studio/tree/badges)
 [![Code Duplication](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ezzakyabdellah/floorplan-studio/badges/duplication.json)](https://github.com/ezzakyabdellah/floorplan-studio/tree/badges)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#)
 
@@ -130,10 +131,20 @@ runs on every push and pull request to `main`:
 weekly schedule.
 
 [`.github/workflows/coverage-and-duplication.yml`](.github/workflows/coverage-and-duplication.yml)
-adds two quality metrics: it measures Rust line coverage with `cargo-llvm-cov`
-and frontend/Rust duplication with `jscpd`. Duplication above 5% fails the
-`gates` job. On `main`, the `badges` job publishes `coverage.json` and
-`duplication.json` to the `badges` branch, which power the dynamic badges above.
+tracks three quality metrics:
+
+1. **Rust line coverage** with `cargo-llvm-cov`.
+2. **TypeScript/React line coverage** with Vitest + V8 (`npm run test:coverage`).
+   The report covers the unit-tested logic under `src/engineering`,
+   `src/services`, `src/store`, `src/utils`, and `src/data`; UI components and
+   type-only/sample files are excluded because the tests run in a Node
+   environment without a DOM renderer.
+3. **Code duplication** with `jscpd`, scanning both `src` and `src-tauri/src`.
+   Duplication above 5% fails the `gates` job.
+
+On `main`, the `badges` job publishes `coverage.json`, `frontend-coverage.json`,
+and `duplication.json` to the `badges` branch, which power the dynamic badges
+above.
 
 ## Prerequisites
 
