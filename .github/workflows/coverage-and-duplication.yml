@@ -1,0 +1,161 @@
+name: Coverage & Duplication
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  metrics:
+    name: Collect coverage & duplication metrics
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Measure code duplication
+        run: |
+          npx --yes jscpd@5.4.3 src src-tauri/src \
+            --threshold 100 \
+            --reporters json,console \
+            --output ./jscpd-report
+          node -e "const fs=require('fs'); const r=require('./jscpd-report/jscpd-report.json'); const pct=Number(r.statistics.total.percentage.toFixed(1)); fs.mkdirSync('./metrics',{recursive:true}); fs.writeFileSync('./metrics/duplication.json', JSON.stringify({value:pct})); console.log('Code duplication: ' + pct + '%');"
+
+      - name: Install Linux Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up Rust with LLVM tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Measure Rust coverage
+        working-directory: src-tauri
+        run: |
+          cargo llvm-cov --json --summary-only > cov.json
+          node -e "const fs=require('fs'); const c=require('./cov.json'); const pct=Number(c.data[0].totals.lines.percent.toFixed(1)); fs.mkdirSync('../metrics',{recursive:true}); fs.writeFileSync('../metrics/coverage.json', JSON.stringify({value:pct})); console.log('Rust line coverage: ' + pct + '%');"
+
+      - name: Upload metric reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-metrics
+          path: |
+            metrics/
+            jscpd-report/
+            src-tauri/cov.json
+          retention-days: 3
+
+  gates:
+    name: Enforce duplication limit
+    needs: metrics
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download metrics
+        uses: actions/download-artifact@v4
+        with:
+          name: quality-metrics
+          path: .
+
+      - name: Fail when duplication exceeds 5%
+        run: |
+          node -e "const p=require('./metrics/duplication.json').value; console.log('Code duplication: ' + p + '% (limit: 5%)'); if (p > 5) { console.error('::error::Duplication ' + p + '% exceeds the 5% limit'); process.exit(1); }"
+
+  badges:
+    name: Publish dynamic badges
+    needs: metrics
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download metrics
+        uses: actions/download-artifact@v4
+        with:
+          name: quality-metrics
+          path: .
+
+      - name: Build badge JSON
+        run: |
+          mkdir -p badges
+          node <<'NODE'
+          const fs = require("fs");
+          const coverage = require("./metrics/coverage.json").value;
+          const duplication = require("./metrics/duplication.json").value;
+
+          function coverageColor(value) {
+            if (value >= 80) return "brightgreen";
+            if (value >= 60) return "green";
+            if (value >= 40) return "yellow";
+            if (value >= 20) return "orange";
+            return "red";
+          }
+
+          function duplicationColor(value) {
+            if (value <= 1) return "brightgreen";
+            if (value <= 3) return "yellow";
+            if (value <= 5) return "orange";
+            return "red";
+          }
+
+          fs.writeFileSync(
+            "badges/coverage.json",
+            JSON.stringify({
+              schemaVersion: 1,
+              label: "Rust Coverage",
+              message: `${coverage}%`,
+              color: coverageColor(coverage),
+            }) + "\n",
+          );
+
+          fs.writeFileSync(
+            "badges/duplication.json",
+            JSON.stringify({
+              schemaVersion: 1,
+              label: "Code Duplication",
+              message: `${duplication}%`,
+              color: duplicationColor(duplication),
+            }) + "\n",
+          );
+
+          console.log("Wrote badges/coverage.json and badges/duplication.json");
+          NODE
+
+      - name: Publish badges branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./badges
+          publish_branch: badges
+          keep_files: true
+          user_name: github-actions[bot]
+          user_email: 41898282+github-actions[bot]@users.noreply.github.com
