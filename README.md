@@ -1,12 +1,26 @@
 # FloorPlan Studio
 
-[![CI Quality Gates](https://github.com/YOUR_USERNAME/floorplan-studio/actions/workflows/ci-quality-gate.yml/badge.svg)](https://github.com/YOUR_USERNAME/floorplan-studio/actions/workflows/ci-quality-gate.yml)
-[![CodeQL](https://github.com/YOUR_USERNAME/floorplan-studio/actions/workflows/codeql.yml/badge.svg)](https://github.com/YOUR_USERNAME/floorplan-studio/actions/workflows/codeql.yml)
+[![CI Quality Gates](https://github.com/ezzakyabdellah/floorplan-studio/actions/workflows/ci-quality-gate.yml/badge.svg)](https://github.com/ezzakyabdellah/floorplan-studio/actions/workflows/ci-quality-gate.yml)
+[![CodeQL](https://github.com/ezzakyabdellah/floorplan-studio/actions/workflows/codeql.yml/badge.svg)](https://github.com/ezzakyabdellah/floorplan-studio/actions/workflows/codeql.yml)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#)
 
 > A cross-platform desktop studio for 2D drafting, 3D visualization, and AI-assisted floor-plan and stair design.
 
-> **Demo:** _Add a short GIF or screenshot of the 2D/3D workspace here._
+## Screenshots
+
+| Start screen | 2D drafting workspace |
+| --- | --- |
+| ![FloorPlan Studio start screen](docs/screenshots/01-welcome.png) | ![2D drafting workspace with furniture and live rule checking](docs/screenshots/02-floorplan-2d.png) |
+
+| 3D view — sunny | 3D view — night |
+| --- | --- |
+| ![3D floor plan in sunny daylight](docs/screenshots/03-floorplan-3d-sunny.png) | ![3D floor plan in night lighting](docs/screenshots/04-floorplan-3d-night.png) |
+
+| Stair & ladder studio |
+| --- |
+| ![Stair and ladder design studio](docs/screenshots/05-stair-studio.png) |
+
+See [WIKI.md](WIKI.md) for a guided tour of these screens.
 
 ## Overview
 
@@ -137,7 +151,7 @@ MSVC build tools.
 
 ```bash
 git lfs install
-git clone https://github.com/YOUR_USERNAME/floorplan-studio.git
+git clone https://github.com/ezzakyabdellah/floorplan-studio.git
 cd floorplan-studio
 npm ci
 npm run tauri dev
