@@ -26,6 +26,7 @@ import { Canvas3D } from "../canvas/Canvas3D";
 import { CompliancePanel } from "../ui/CompliancePanel";
 import { ImageImporter } from "../ui/ImageImporter";
 import { LocalAiAssistant } from "../ui/LocalAiAssistant";
+import { RuntimeDependencyStatus } from "../ui/RuntimeDependencyStatus";
 import { useFloorPlanStore } from "../../store/floorPlanStore";
 import type { ActiveTool, Wall } from "../../types/floorplan";
 import { buildSceneFile, openSceneFile, saveSceneFile } from "../../utils/fileIO";
@@ -702,6 +703,10 @@ function Sidebar() {
               : `${issueCount} compliance issue${issueCount === 1 ? "" : "s"}`}
           </span>
         </div>
+      </div>
+
+      <div className="border-b border-line p-3">
+        <RuntimeDependencyStatus />
       </div>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">

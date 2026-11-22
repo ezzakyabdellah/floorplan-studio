@@ -84,6 +84,10 @@ view to reposition it.
 Provider choice and model details are documented in
 [`docs/gemini-integration.md`](docs/gemini-integration.md).
 
+The **Local AI runtime** card in the sidebar reports whether Ollama is running
+and links to its installer when it is not. The ONNX vision model is bundled with
+the app; Ollama is a separate optional runtime for chat and text generation.
+
 ## Stair & ladder studio
 
 ![Stair and ladder design studio](docs/screenshots/05-stair-studio.png)

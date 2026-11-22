@@ -183,6 +183,23 @@ To produce installers for all supported platforms:
 npm run tauri build
 ```
 
+## Installers
+
+Tauri bundles the ONNX vision model and the furniture assets from `public/models`
+into every installer, so no separate download is needed. The Windows NSIS
+installer embeds the WebView2 bootstrapper (~1.8 MB) and installs WebView2 when
+it is missing.
+
+Ollama is intentionally **not** bundled: it is a separate runtime with
+platform-specific installers and model weights. The app probes
+`http://localhost:11434` at startup and shows a **Local AI runtime** card in the
+sidebar with a guided install link. Gemini, on-device ONNX vision, and every
+geometry tool work without Ollama.
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) builds installers
+on a `v*` tag: Windows `.exe`, Linux `.deb` + `.AppImage`, and macOS `.app` +
+`.dmg`. macOS artifacts are unsigned until signing credentials are configured.
+
 ## Configuration
 
 On first launch the app creates a per-user config file and shows a warning banner
