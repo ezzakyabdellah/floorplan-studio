@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Least-privilege capability for the main window",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:default",
-    "dialog:default",
+    "opener:allow-reveal-item-in-dir",
+    "dialog:allow-open",
+    "dialog:allow-save",
     {
       "identifier": "http:default",
       "allow": [
@@ -26,6 +27,21 @@
         { "path": "$DESKTOP/**" },
         { "path": "$DOCUMENT/**" },
         { "path": "$DOWNLOAD/**" }
+      ],
+      "deny": [
+        { "path": "$HOME/.ssh/**" },
+        { "path": "$HOME/.aws/**" },
+        { "path": "$HOME/.gnupg/**" },
+        { "path": "$HOME/.kube/**" },
+        { "path": "$HOME/.docker/**" },
+        { "path": "$HOME/.azure/**" },
+        { "path": "$HOME/.gcloud/**" },
+        { "path": "$HOME/.config/**" },
+        { "path": "$HOME/.env" },
+        { "path": "$HOME/.env/**" },
+        { "path": "$HOME/.netrc" },
+        { "path": "$HOME/.npmrc" },
+        { "path": "$HOME/.local/share/keyrings/**" }
       ]
     },
     {
@@ -35,6 +51,21 @@
         { "path": "$DESKTOP/**" },
         { "path": "$DOCUMENT/**" },
         { "path": "$DOWNLOAD/**" }
+      ],
+      "deny": [
+        { "path": "$HOME/.ssh/**" },
+        { "path": "$HOME/.aws/**" },
+        { "path": "$HOME/.gnupg/**" },
+        { "path": "$HOME/.kube/**" },
+        { "path": "$HOME/.docker/**" },
+        { "path": "$HOME/.azure/**" },
+        { "path": "$HOME/.gcloud/**" },
+        { "path": "$HOME/.config/**" },
+        { "path": "$HOME/.env" },
+        { "path": "$HOME/.env/**" },
+        { "path": "$HOME/.netrc" },
+        { "path": "$HOME/.npmrc" },
+        { "path": "$HOME/.local/share/keyrings/**" }
       ]
     },
     {
@@ -44,6 +75,21 @@
         { "path": "$DESKTOP/**" },
         { "path": "$DOCUMENT/**" },
         { "path": "$DOWNLOAD/**" }
+      ],
+      "deny": [
+        { "path": "$HOME/.ssh/**" },
+        { "path": "$HOME/.aws/**" },
+        { "path": "$HOME/.gnupg/**" },
+        { "path": "$HOME/.kube/**" },
+        { "path": "$HOME/.docker/**" },
+        { "path": "$HOME/.azure/**" },
+        { "path": "$HOME/.gcloud/**" },
+        { "path": "$HOME/.config/**" },
+        { "path": "$HOME/.env" },
+        { "path": "$HOME/.env/**" },
+        { "path": "$HOME/.netrc" },
+        { "path": "$HOME/.npmrc" },
+        { "path": "$HOME/.local/share/keyrings/**" }
       ]
     }
   ]

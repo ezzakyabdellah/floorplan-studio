@@ -23,8 +23,22 @@
         "theme": "Dark"
       }
     ],
+    "withGlobalTauri": false,
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self' customprotocol: asset:",
+        "script-src": "'self' 'wasm-unsafe-eval'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' asset: http://asset.localhost blob: data:",
+        "font-src": "'self' data:",
+        "connect-src": "'self' ipc: http://ipc.localhost http://localhost:11434 http://127.0.0.1:11434 https://generativelanguage.googleapis.com",
+        "worker-src": "'self' blob:",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'none'"
+      },
+      "capabilities": ["default"],
+      "dangerousDisableAssetCspModification": false
     }
   },
   "bundle": {

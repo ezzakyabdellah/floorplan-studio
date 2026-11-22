@@ -6,23 +6,41 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+tauri-dev.log
 
+# Dependencies
 node_modules
+
+# Build output
 dist
 dist-ssr
+build
+src-tauri/target
+src-tauri/gen
+
+# Local debug / prototype artifacts
 debug
+.opencode
+
+# Local databases and caches
 *.local
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
 
 # Local environment files (may contain secrets)
 .env
 .env.*
 !.env.example
 
-# Editor directories and files
+# Editor / OS files
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
+Thumbs.db
+desktop.ini
 *.suo
 *.ntvs*
 *.njsproj
